@@ -1,0 +1,72 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ekavist-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ekavist
+      POSTGRES_PASSWORD: ekavist_dev_password
+      POSTGRES_DB: ekavist
+    ports:
+      - '5433:5432'
+    volumes:
+      - ekavist-pgdata:/var/lib/postgresql/data
+      - ./scripts/init-test-db.sql:/docker-entrypoint-initdb.d/10-init-test-db.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ekavist -d ekavist']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: ekavist-mailpit
+    restart: unless-stopped
+    ports:
+      - '1025:1025'
+      - '8025:8025'
+    environment:
+      MP_MAX_MESSAGES: 500
+
+  # Scheduled database backups (Phase 20). Runs busybox `crond` in the same image as the
+  # server, so `pg_dump` always matches the server version — a dump taken by an older
+  # client against a newer server is the classic way to find out at restore time that the
+  # backups were never usable.
+  #
+  # It is behind a profile so `npm run db:up` in development does not start it:
+  #   docker compose --profile backup up -d backup
+  # and one run by hand, which is also how you prove it works:
+  #   docker compose run --rm backup /ops/backup.sh
+  #   docker compose run --rm backup /ops/restore-check.sh
+  backup:
+    image: postgres:16-alpine
+    container_name: ekavist-backup
+    profiles: ['backup']
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGPORT: '5432'
+      PGUSER: ekavist
+      PGPASSWORD: ekavist_dev_password
+      PGDATABASE: ekavist
+      BACKUP_DIR: /backups
+      RETENTION_DAYS: '14'
+      # Minute and hour, in the container's UTC clock.
+      BACKUP_CRON: '0 2 * * *'
+    volumes:
+      - ./ops:/ops:ro
+      - ekavist-backups:/backups
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - |
+        set -eu
+        echo "$${BACKUP_CRON} /ops/backup.sh" > /etc/crontabs/root
+        echo "backup scheduled: $${BACKUP_CRON}"
+        exec crond -f -d 8
+
+volumes:
+  ekavist-pgdata:
+  ekavist-backups:

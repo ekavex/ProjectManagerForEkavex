@@ -1,0 +1,154 @@
+# Continuous integration.
+#
+# The same gate `npm run verify` runs locally, plus the end-to-end journeys. A pull
+# request that cannot pass this is not ready, and nothing here is allowed to be skipped
+# to make the build green.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ekavist
+          POSTGRES_PASSWORD: ekavist_ci_password
+          POSTGRES_DB: ekavist
+        ports: ['5433:5432']
+        options: >-
+          --health-cmd "pg_isready -U ekavist"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://ekavist:ekavist_ci_password@localhost:5433/ekavist?schema=public
+      TEST_DATABASE_URL: postgresql://ekavist:ekavist_ci_password@localhost:5433/ekavist_test?schema=public
+      AUTH_JWT_SECRET: a-continuous-integration-secret-that-is-long-enough
+      APP_URL: http://localhost:4173
+      API_URL: http://localhost:4100
+      EMAIL_TRANSPORT: console
+      JOBS_ENABLED: 'false'
+      LOG_LEVEL: warn
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # The compose file creates this on first start; the service container does not.
+      - name: Create the test database
+        run: |
+          PGPASSWORD=ekavist_ci_password psql -h localhost -p 5433 -U ekavist -d ekavist \
+            -c 'CREATE DATABASE ekavist_test OWNER ekavist;'
+
+      - name: Apply migrations and indexes
+        run: npm run db:deploy --workspace @ekavist/api
+
+      - name: Formatting
+        run: npm run format:check
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Types
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm run test:unit --workspace @ekavist/api
+
+      - name: Integration tests
+        run: npm run test:integration --workspace @ekavist/api
+
+      - name: Permission matrix
+        run: npm run test:permissions --workspace @ekavist/api
+
+      - name: Build
+        run: npm run build
+
+      - name: Install the browser for the journeys
+        run: npx playwright install --with-deps chromium
+
+      - name: End-to-end journeys
+        run: npm run test:e2e
+
+      - name: Keep the report when a journey fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+
+      # A production install must not contain a known vulnerability. Development-only
+      # findings are reviewed in docs/DECISIONS.md rather than blocking the build.
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+        continue-on-error: true
+
+      # The image is part of the deliverable, so it is built and started here rather than
+      # trusted. Every defect in it so far — a missing tsconfig, a Prisma engine built for
+      # the wrong OpenSSL, the Prisma CLI shipping inside the runtime image — was invisible
+      # until something actually built and ran it.
+      - name: Build the API image
+        run: docker build -f apps/api/Dockerfile -t ekavist-api:ci .
+
+      - name: Start the image and wait for it to report healthy
+        run: |
+          docker run -d --name ekavist-api-ci --network host \
+            -e NODE_ENV=production \
+            -e API_PORT=4300 \
+            -e DATABASE_URL="$DATABASE_URL" \
+            -e AUTH_JWT_SECRET="$AUTH_JWT_SECRET" \
+            -e APP_URL=https://ekavist.invalid \
+            -e API_URL=https://api.ekavist.invalid \
+            -e AUTH_COOKIE_SECURE=true \
+            -e EMAIL_TRANSPORT=smtp \
+            -e EMAIL_HOST=127.0.0.1 \
+            -e EMAIL_PORT=1025 \
+            -e JOBS_ENABLED=false \
+            ekavist-api:ci
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:4300/api/v1/health > /dev/null; then
+              echo "The image serves /api/v1/health."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "The image never became healthy:"
+          docker logs ekavist-api-ci
+          exit 1
+
+      - name: Confirm the image ships no build tooling
+        run: |
+          for unwanted in typescript prisma; do
+            if docker run --rm --entrypoint sh ekavist-api:ci \
+                 -c "test -d node_modules/$unwanted"; then
+              echo "The runtime image contains $unwanted, which it must not."
+              exit 1
+            fi
+          done
+          echo "No TypeScript and no Prisma CLI in the runtime image."
+
+      - name: Stop the image
+        if: always()
+        run: docker rm -f ekavist-api-ci || true
