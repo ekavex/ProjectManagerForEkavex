@@ -57,6 +57,11 @@ export default async function setup(): Promise<void> {
     });
   };
 
+  // `npm ci` does not generate the client, and `migrate deploy` — unlike `migrate dev` —
+  // does not either. Without this the first thing to import `@prisma/client` on a fresh
+  // checkout dies with "did not initialize yet", which is exactly how CI failed the first
+  // time it ran.
+  run([resolveBin('prisma', 'build/index.js'), 'generate']);
   run([resolveBin('prisma', 'build/index.js'), 'migrate', 'deploy']);
   run([
     resolveBin('tsx', 'dist/cli.mjs'),

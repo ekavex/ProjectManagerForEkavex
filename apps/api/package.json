@@ -11,7 +11,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prisma:generate": "dotenv -e ../../.env -- prisma generate",
     "db:migrate": "dotenv -e ../../.env -- prisma migrate dev && npm run db:indexes",
-    "db:deploy": "dotenv -e ../../.env -- prisma migrate deploy && npm run db:indexes",
+    "db:deploy": "npm run prisma:generate && dotenv -e ../../.env -- prisma migrate deploy && npm run db:indexes",
     "db:reset": "dotenv -e ../../.env -- prisma migrate reset --force && npm run db:indexes",
     "db:studio": "dotenv -e ../../.env -- prisma studio",
     "db:seed": "dotenv -e ../../.env -- tsx prisma/seed.ts",
