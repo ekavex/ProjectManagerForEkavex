@@ -1,0 +1,97 @@
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}']
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # Runs prisma migrate deploy once, then exits.
+  # Uses the build stage (which has the Prisma CLI) — the runtime image omits it by design.
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: build
+    command: ['npx', 'prisma', 'migrate', 'deploy', '--schema', 'apps/api/prisma/schema.prisma']
+    restart: 'no'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "9096:4000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      API_PORT: 4000
+      APP_URL: ${APP_URL}
+      API_URL: ${API_URL}
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
+      AUTH_JWT_SECRET: ${AUTH_JWT_SECRET}
+      AUTH_ACCESS_TOKEN_TTL: ${AUTH_ACCESS_TOKEN_TTL:-15m}
+      AUTH_REFRESH_TOKEN_TTL_DAYS: ${AUTH_REFRESH_TOKEN_TTL_DAYS:-30}
+      AUTH_PASSWORD_RESET_TTL_MINUTES: ${AUTH_PASSWORD_RESET_TTL_MINUTES:-60}
+      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-true}
+      ORG_NAME: ${ORG_NAME}
+      ORG_TIMEZONE: ${ORG_TIMEZONE:-Asia/Kolkata}
+      ORG_WORKDAY_START: ${ORG_WORKDAY_START:-09:30}
+      ORG_LATE_AFTER: ${ORG_LATE_AFTER:-10:00}
+      EMAIL_TRANSPORT: ${EMAIL_TRANSPORT:-smtp}
+      EMAIL_HOST: ${EMAIL_HOST}
+      EMAIL_PORT: ${EMAIL_PORT:-465}
+      EMAIL_SECURE: ${EMAIL_SECURE:-true}
+      EMAIL_USER: ${EMAIL_USER}
+      EMAIL_PASSWORD: ${EMAIL_PASSWORD}
+      EMAIL_FROM: ${EMAIL_FROM}
+      JOBS_ENABLED: ${JOBS_ENABLED:-true}
+      JOBS_DEADLINE_SCAN_CRON: ${JOBS_DEADLINE_SCAN_CRON:-0 8 * * *}
+      JOBS_OVERDUE_SCAN_CRON: ${JOBS_OVERDUE_SCAN_CRON:-15 8 * * *}
+      JOBS_DAILY_SUMMARY_CRON: ${JOBS_DAILY_SUMMARY_CRON:-0 18 * * *}
+      JOBS_WEEKLY_SUMMARY_CRON: ${JOBS_WEEKLY_SUMMARY_CRON:-0 9 * * 1}
+      JOBS_CONSISTENCY_SCAN_CRON: ${JOBS_CONSISTENCY_SCAN_CRON:-0 2 * * *}
+      JOBS_MAIL_DISPATCH_CRON: ${JOBS_MAIL_DISPATCH_CRON:-*/2 * * * *}
+      UPLOAD_DIR: /repo/uploads
+      UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES:-10485760}
+      RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS:-60000}
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-300}
+      RATE_LIMIT_AUTH_MAX: ${RATE_LIMIT_AUTH_MAX:-10}
+    volumes:
+      - uploads:/repo/uploads
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        VITE_API_URL: ${API_URL}
+    restart: unless-stopped
+    ports:
+      - "9093:80"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  uploads:
