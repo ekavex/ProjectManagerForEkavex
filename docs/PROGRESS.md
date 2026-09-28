@@ -24,7 +24,7 @@ Legend: `[x]` complete · `[~]` in progress · `[ ]` not started · `[!]` blocke
 | 17 — Security                 | `[x]`  |
 | 18 — Testing                  | `[x]`  |
 | 19 — Performance              | `[x]`  |
-| 20 — Production readiness     | `[~]`  |
+| 20 — Production readiness     | `[x]`  |
 | — Web application             | `[x]`  |
 
 ---
@@ -131,9 +131,10 @@ These were all found by running the thing, not by reading it.
    listed on the dashboards, but nothing in the interface could create one. Added the
    Milestones tab the specification's navigation calls for (section 80).
 
-Four more were found in Phase 20, by building and running things that had until then only
-been written: the Dockerfile's three defects and `npm run verify` failing on a clean tree.
-They are described under Remaining work below.
+Seven more were found in Phase 20, by building and running things that had until then
+only been written: the Dockerfile's three defects, `npm run verify` failing on a clean
+tree, and the three clean-checkout failures that CI found on its first runs. All are
+described under Remaining work below.
 
 ---
 
@@ -192,15 +193,33 @@ and run. One item genuinely remains.
   `vitest run` exits 1 when it finds none, so the gate the README documents failed at its
   last step. Fixed with `--passWithNoTests`, and the absence of component tests is now
   stated in `docs/TEST_STRATEGY.md` rather than hidden behind a failing command.
-- **The CI workflow still has not run on GitHub Actions.** This is the one outstanding
-  item. The working tree is a git repository with no commits and no remote, so there is
-  nothing for Actions to run against, and `act` is not installed on this machine. Every
-  step in `.github/workflows/ci.yml` has been executed locally, in the same order, against
-  the same PostgreSQL 16 the workflow uses, and the workflow file parses — but the
-  workflow _as a workflow_ is unproven, and this file will not claim otherwise until it has
-  run. It now also builds the image, starts it, waits for `/api/v1/health` and fails if
-  `node_modules/typescript` or `node_modules/prisma` is present inside it; each of the
-  three defects above would have been caught by that step.
+- **The CI workflow has run on GitHub Actions, and it is green.** The repository was
+  pushed to `ekavex/ProjectManagerForEkavex` on 2026-09-28 and the workflow passed against
+  commit `b209e76` — all twenty steps, including the Playwright journeys, the image build,
+  the health check, and the assertion that the runtime image contains neither
+  `node_modules/typescript` nor `node_modules/prisma`.
+
+  It took four runs, because the first three found real defects. All three are the same
+  bug wearing different clothes: **this machine carried build state that a clean checkout
+  does not have**, and every local verification in this project had been standing on it.
+
+  1. **The Prisma client was never generated.** `npm ci` does not generate it and
+     `prisma migrate deploy` — unlike `migrate dev` — does not either, so
+     `apply-search-indexes.ts` imported a client that had never been built. It passed here
+     only because `node_modules/.prisma` was left over from earlier runs. `db:deploy` and
+     the test bootstrap now generate it first.
+  2. **`packages/shared/dist` was never built.** `@ekavist/shared` resolves to its `dist`,
+     and nothing built it before the typecheck step, so every file importing it failed
+     TS2307 and the resulting `any` types produced another two hundred cascade errors.
+     `typecheck` and `test` now build it first, and CI builds it explicitly after install.
+  3. **The lockfile was pruned to Windows.** `package-lock.json` recorded win32 binaries
+     only — for rollup, for esbuild and for Tailwind's oxide — so `npm ci` on Linux
+     installed no native binary and vitest died on startup. Regenerating it added 102
+     platform binaries, removed nothing, and moved two patch versions.
+
+  None of these could have been found by reading the code, and none of them would have
+  been found by running the gate again on this machine. The workflow paid for itself on
+  its first execution.
 
 **Known gaps, deliberately.**
 
