@@ -55,6 +55,14 @@ jobs:
       - name: Install
         run: npm ci
 
+      # `@ekavist/shared` resolves to its `dist`, so every workspace that imports it needs
+      # it compiled before typecheck, the tests or the build touch anything. It is only
+      # invisible on a development machine because `dist` is left over from a previous
+      # build. `npm run typecheck` and `npm run test` do this for themselves as well; the
+      # step is here so no later reordering can quietly reintroduce the dependency.
+      - name: Build the shared package
+        run: npm run build:shared
+
       # The compose file creates this on first start; the service container does not.
       - name: Create the test database
         run: |
