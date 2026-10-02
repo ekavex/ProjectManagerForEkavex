@@ -9,7 +9,15 @@
  * created, exactly as a real project unfolds.
  */
 import { expect, test } from '@playwright/test';
-import { createProject, openTab, PEOPLE, selectByText, signIn, signOut } from './helpers.js';
+import {
+  createProject,
+  daysFromToday,
+  openTab,
+  PEOPLE,
+  selectByText,
+  signIn,
+  signOut,
+} from './helpers.js';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -34,7 +42,8 @@ test('an administrator creates a project and assigns a lead', async ({ page }) =
 
   await openTab(page, 'Phases');
   await expect(page.getByText('Initiation')).toBeVisible();
-  await expect(page.getByText('Closure')).toBeVisible();
+  // Scoped to the phase list: the project also has a Closure tab.
+  await expect(page.getByRole('list').getByText('Closure')).toBeVisible();
 });
 
 test('the lead builds the team, the plan and a task', async ({ page }) => {
@@ -59,7 +68,8 @@ test('the lead builds the team, the plan and a task', async ({ page }) => {
   await openTab(page, 'Tasks');
   await page.getByRole('button', { name: 'New task' }).click();
   await page.getByLabel('Task name').fill(state.taskName);
-  await page.getByLabel('Due date').fill('2026-09-30');
+  // A few days out, so it is upcoming rather than due today or overdue.
+  await page.getByLabel('Due date').fill(daysFromToday(4));
   await page.getByLabel('Estimated hours').fill('8');
   await page.getByRole('button', { name: PEOPLE.member.name }).click();
   await page.getByRole('button', { name: 'Create task' }).click();
@@ -75,13 +85,28 @@ test('a dependency is created and a loop is refused', async ({ page }) => {
   // A second task, so there is something to depend on.
   await page.getByRole('button', { name: 'New task' }).click();
   await page.getByLabel('Task name').fill('Architecture');
-  await page.getByLabel('Due date').fill('2026-10-10');
+  await page.getByLabel('Due date').fill(daysFromToday(12));
   await page.getByRole('button', { name: 'Create task' }).click();
   await expect(page.getByText('Architecture')).toBeVisible();
 
+  // Architecture waits for the requirements.
+  await page.getByRole('link', { name: 'Architecture' }).click();
+  await selectByText(page, 'Waits for', state.taskName);
+  await page.getByRole('button', { name: 'Link', exact: true }).click();
+  await expect(page.getByText('Dependency added.')).toBeVisible();
+  await expect(page.getByRole('listitem').getByText('Finish → start')).toBeVisible();
+
+  // Making the requirements wait for Architecture would close a loop, and is refused
+  // with the tasks named.
+  await page.goto(`/projects/${state.projectId}/tasks`);
+  await page.getByRole('link', { name: state.taskName }).click();
+  await selectByText(page, 'Waits for', 'Architecture');
+  await page.getByRole('button', { name: 'Link', exact: true }).click();
+  await expect(page.getByText(/would create a loop/)).toBeVisible();
+
   // The Gantt is the place a dependency becomes visible, so it is checked there.
   await openTab(page, 'Gantt');
-  await expect(page.getByText(/dependencies/)).toBeVisible();
+  await expect(page.getByText(/1 dependencies/)).toBeVisible();
 });
 
 test('a member works the task: start, progress, complete', async ({ page }) => {
@@ -223,4 +248,59 @@ test('the project dashboard reports real numbers', async ({ page }) => {
 
   // And the phase progress list reflects the gate approved in the previous journey.
   await expect(page.getByText('Phase progress')).toBeVisible();
+});
+
+test('the lead reschedules a task from the Gantt', async ({ page }) => {
+  await signIn(page, 'lead');
+  await page.goto(`/projects/${state.projectId}/gantt`);
+  await page.getByRole('button', { name: 'day', exact: true }).click();
+
+  // A focused bar moves a day per arrow key; the label carries the dates it now has.
+  const bar = page.getByRole('button', { name: /^Architecture,/ });
+  const before = await bar.getAttribute('aria-label');
+  await bar.focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(bar).not.toHaveAttribute('aria-label', before ?? '');
+});
+
+test('a member asks for leave and an administrator approves it', async ({ page }) => {
+  await signIn(page, 'member');
+  await page.goto('/leave');
+  await page.getByRole('button', { name: 'Request leave' }).click();
+  // A full week always contains five working days, whatever weekday today is.
+  await page.getByLabel('First day').fill(daysFromToday(20));
+  await page.getByLabel('Last day').fill(daysFromToday(26));
+  await page.getByLabel('Reason').fill('Family visit');
+  await page.getByRole('button', { name: 'Send request' }).click();
+  const request = page.getByRole('listitem').filter({ hasText: 'Family visit' });
+  await expect(request.getByText('Pending', { exact: true })).toBeVisible();
+  // The balance counts the request while it waits for a decision.
+  await expect(page.getByText(/5 pending/)).toBeVisible();
+
+  await signOut(page);
+  await signIn(page, 'admin');
+  await page.goto('/leave?tab=review');
+  await expect(page.getByText('Family visit')).toBeVisible();
+  await page.getByRole('button', { name: 'Approve' }).click();
+  await expect(page.getByText('Leave approved.')).toBeVisible();
+});
+
+test('the lead activates the project, then closes it through the checklist', async ({ page }) => {
+  await signIn(page, 'lead');
+  await page.goto(`/projects/${state.projectId}/settings`);
+  await page.getByRole('button', { name: 'Active', exact: true }).click();
+  await page.getByLabel('Reason').fill('Kick-off done');
+  await page.getByRole('button', { name: 'Change status' }).click();
+  await expect(page.getByText('Project is now active.')).toBeVisible();
+
+  await openTab(page, 'Closure');
+  await page.getByLabel('Lesson').fill('Link dependencies on day one.');
+  await page.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(page.getByText('Link dependencies on day one.')).toBeVisible();
+
+  // Work is still open, so closing needs those items acknowledged.
+  await page.getByLabel(/^Close with \d+ open item/).check();
+  await page.getByRole('button', { name: 'Close project' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Close project' }).click();
+  await expect(page.getByText(/This project was closed/)).toBeVisible();
 });

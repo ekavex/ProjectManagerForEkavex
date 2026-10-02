@@ -37,6 +37,9 @@ import {
   workloadRouter,
 } from './routes/ops.routes.js';
 import { mountProjectFeature, projectRouter } from './routes/project.routes.js';
+import { leaveRouter } from './routes/leave.routes.js';
+import { organizationRouter } from './routes/organization.routes.js';
+import { planningRouter, projectExportRouter } from './routes/planning.routes.js';
 import { departmentRouter, userRouter } from './routes/user.routes.js';
 import {
   dependencyRouter,
@@ -94,6 +97,7 @@ export function createApp(): Express {
   api.use('/auth', authRouter);
   api.use('/users', userRouter);
   api.use('/departments', departmentRouter);
+  api.use('/organization', organizationRouter);
 
   mountProjectFeature('phases', phaseRouter);
   mountProjectFeature('wbs', wbsRouter);
@@ -115,15 +119,18 @@ export function createApp(): Express {
   mountProjectFeature('raci', raciRouter);
   mountProjectFeature('reports', reportRouter);
   mountProjectFeature('import', importRouter);
+  mountProjectFeature('export', projectExportRouter);
   api.use('/projects', projectRouter);
 
   api.use('/attendance', attendanceRouter);
+  api.use('/leave', leaveRouter);
   api.use('/me/notes', personalNoteRouter);
   api.use('/me', meRouter);
   api.use('/notifications', notificationRouter);
   api.use('/dashboard', dashboardRouter);
   api.use('/search', searchRouter);
   api.use('/audit', auditRouter);
+  api.use(planningRouter);
   api.use('/reports', workloadRouter);
 
   app.use('/api/v1', api);

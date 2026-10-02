@@ -6,6 +6,7 @@
  * distinction is the whole point of the module.
  */
 import { useState } from 'react';
+import { ExportButton } from '../components/ExportButton.js';
 import { Avatar, FilterBar, PageHeader, Pagination } from '../components/ui/page.js';
 import {
   Badge,
@@ -34,6 +35,7 @@ export function AttendancePage() {
       <PageHeader
         title="Attendance"
         subtitle="Signing in is authentication. Starting work is attendance — they are recorded separately."
+        actions={<AttendanceExport />}
       />
 
       {seesTeam && (
@@ -291,5 +293,37 @@ function TeamAttendance() {
         )}
       </Card>
     </>
+  );
+}
+
+/**
+ * A CSV of attendance days for a date range: your own, plus everyone you may see — the
+ * server decides who that is.
+ */
+function AttendanceExport() {
+  const today = new Date().toISOString().slice(0, 10);
+  const monthAgo = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+  const [from, setFrom] = useState(monthAgo);
+  const [to, setTo] = useState(today);
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <Input
+        type="date"
+        aria-label="Export from"
+        className="h-8 w-36"
+        value={from}
+        onChange={(event) => setFrom(event.target.value)}
+      />
+      <span className="text-[12px] text-ink-faint">to</span>
+      <Input
+        type="date"
+        aria-label="Export to"
+        className="h-8 w-36"
+        value={to}
+        onChange={(event) => setTo(event.target.value)}
+      />
+      <ExportButton path="/attendance/export.csv" query={{ from, to }} />
+    </div>
   );
 }

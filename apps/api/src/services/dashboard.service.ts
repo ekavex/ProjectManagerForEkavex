@@ -22,9 +22,11 @@ import {
   type TaskSummary,
   type WorkloadQuery,
   type WorkloadReport,
+  type WorkstreamRow,
 } from '@ekavist/shared';
 import type { Prisma } from '@prisma/client';
 import type { Db } from '../db/prisma.js';
+import { earnedValue } from '../domain/earned-value.js';
 import { isOpenIssue, isOpenRisk, riskLevelRank } from '../domain/risk.js';
 import { scheduleMetrics } from '../domain/schedule.js';
 import { countTasks, emptyTaskCounts, isOverdue } from '../domain/task-rules.js';
@@ -117,7 +119,7 @@ export async function getProjectDashboard(
       }),
       db.task.findMany({
         where: { projectId, deletedAt: null },
-        select: TASK_SUMMARY_SELECT,
+        select: { ...TASK_SUMMARY_SELECT, estimatedHours: true, actualHours: true },
       }),
       db.phase.findMany({
         where: { projectId },
@@ -289,7 +291,83 @@ export async function getProjectDashboard(
       createdAt: message.createdAt.toISOString(),
     })),
     keyDocuments: documents,
+    workstreams: workstreamsFromTasks(
+      tasks,
+      phases.map((phase) => ({ id: phase.id, name: phase.name })),
+      todayDate,
+    ),
+    earnedValue: earnedValue(
+      tasks.map((task) => ({
+        status: task.status,
+        progress: task.progress,
+        estimatedHours: task.estimatedHours == null ? null : Number(task.estimatedHours),
+        actualHours: task.actualHours == null ? null : Number(task.actualHours),
+        startDate: dateColumnToDateOnly(task.startDate),
+        dueDate: dateColumnToDateOnly(task.dueDate),
+      })),
+      todayDate,
+    ),
   };
+}
+
+/**
+ * Task counts per phase (spec section 49). Phases appear in plan order, including empty
+ * ones, so a phase with no work planned yet is visible rather than missing; tasks outside
+ * any phase are grouped last.
+ */
+function workstreamsFromTasks(
+  tasks: readonly {
+    status: TaskSummary['status'];
+    progress: number;
+    dueDate: Date | null;
+    phase: { id: string; name: string } | null;
+  }[],
+  phases: readonly { id: string; name: string }[],
+  todayDate: DateOnly,
+): WorkstreamRow[] {
+  const rows = new Map<string | null, WorkstreamRow & { progressSum: number; counted: number }>();
+  const blank = (id: string | null, name: string) => ({
+    id,
+    name,
+    total: 0,
+    completed: 0,
+    inProgress: 0,
+    notStarted: 0,
+    blocked: 0,
+    overdue: 0,
+    progress: 0,
+    progressSum: 0,
+    counted: 0,
+  });
+  for (const phase of phases) rows.set(phase.id, blank(phase.id, phase.name));
+
+  for (const task of tasks) {
+    const key = task.phase?.id ?? null;
+    let row = rows.get(key);
+    if (row == null) {
+      row = blank(key, task.phase?.name ?? 'No phase');
+      rows.set(key, row);
+    }
+    row.total += 1;
+    if (task.status === 'COMPLETED') row.completed += 1;
+    else if (task.status === 'IN_PROGRESS' || task.status === 'UNDER_REVIEW') row.inProgress += 1;
+    else if (task.status === 'NOT_STARTED') row.notStarted += 1;
+    else if (task.status === 'BLOCKED') row.blocked += 1;
+    if (
+      isOverdue({ status: task.status, dueDate: dateColumnToDateOnly(task.dueDate) }, todayDate)
+    ) {
+      row.overdue += 1;
+    }
+    if (task.status !== 'CANCELLED') {
+      row.progressSum += task.status === 'COMPLETED' ? 100 : task.progress;
+      row.counted += 1;
+    }
+  }
+
+  return [...rows.values()].map(({ progressSum, counted, ...row }) => ({
+    ...row,
+    progress: counted === 0 ? 0 : Math.round(progressSum / counted),
+  }));
 }
 
 // -------------------------------------------------------- employee dashboard
@@ -819,8 +897,11 @@ export async function getWorkloadReport(
     project: {
       deletedAt: null,
       organizationId: actor.organizationId,
-      ...(visible == null ? {} : { id: { in: visible } }),
-      ...(query.projectId != null ? { id: query.projectId } : {}),
+      // Both conditions apply: naming a project never widens what the caller can see.
+      AND: [
+        ...(visible == null ? [] : [{ id: { in: visible } }]),
+        ...(query.projectId != null ? [{ id: query.projectId }] : []),
+      ],
       ...(query.departmentId != null ? { departmentId: query.departmentId } : {}),
     },
     ...(query.from != null || query.to != null

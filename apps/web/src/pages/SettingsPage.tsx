@@ -9,6 +9,8 @@ import { Badge, Button, Card, Checkbox, Field, Input } from '../components/ui/pr
 import { useAuth } from '../features/auth/AuthProvider.js';
 import { ApiError, api } from '../lib/api.js';
 import { humanise } from '../lib/format.js';
+import { BrowserNotificationsCard } from './settings/BrowserNotificationsCard.js';
+import { TwoFactorCard } from './settings/TwoFactorCard.js';
 
 const PREFERENCES: { key: string; label: string; description: string }[] = [
   {
@@ -51,7 +53,7 @@ export function SettingsPage() {
     <>
       <PageHeader
         title="Settings"
-        subtitle="Your profile, what Ekavist emails you about, and your password."
+        subtitle="Your profile, notifications, password and sign-in security."
       />
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -64,6 +66,8 @@ export function SettingsPage() {
         />
         <PreferencesCard preferences={user.notificationPreferences} />
         <PasswordCard />
+        <TwoFactorCard />
+        <BrowserNotificationsCard />
         <Card title="Account">
           <dl className="grid gap-3 text-[13px]">
             <div>

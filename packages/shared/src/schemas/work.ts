@@ -156,6 +156,16 @@ export const updateTaskSchema = z
     estimatedHours: hoursSchema.nullable().optional(),
     actualHours: hoursSchema.nullable().optional(),
     priority: z.enum(PRIORITIES).optional(),
+    /**
+     * Status and progress have their own routes, which apply the dependency warnings and
+     * completion criteria. Refused here rather than silently dropped.
+     */
+    status: z
+      .never({ invalid_type_error: 'Change the status with PATCH /tasks/:id/status.' })
+      .optional(),
+    progress: z
+      .never({ invalid_type_error: 'Change progress with PATCH /tasks/:id/progress.' })
+      .optional(),
   })
   .refine((v) => v.startDate == null || v.dueDate == null || v.dueDate >= v.startDate, {
     path: ['dueDate'],
@@ -170,8 +180,11 @@ export type UpdateTaskInput = z.infer<typeof updateTaskSchema>;
  */
 export const updateTaskStatusSchema = z.object({
   status: z.enum(TASK_STATUSES),
+  /** Required on completion when the project asks for a completion note. */
   note: longText(2000),
-  /** Set when a predecessor is incomplete and the user chose to proceed anyway. */
+  /** Recorded with the change; required on completion when the project asks for it. */
+  actualHours: hoursSchema.optional(),
+  /** Set when a dependency is unmet and the user chose to proceed anyway. */
   overridePredecessorWarning: z.boolean().default(false),
 });
 export type UpdateTaskStatusInput = z.infer<typeof updateTaskStatusSchema>;
@@ -180,6 +193,8 @@ export const updateTaskProgressSchema = z.object({
   progress: percentSchema,
   actualHours: hoursSchema.optional(),
   note: longText(2000),
+  /** As for a status change: reaching 0 → >0 or 100% can start or finish the task. */
+  overridePredecessorWarning: z.boolean().default(false),
 });
 export type UpdateTaskProgressInput = z.infer<typeof updateTaskProgressSchema>;
 

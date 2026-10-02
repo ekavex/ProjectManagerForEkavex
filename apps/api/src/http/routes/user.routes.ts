@@ -16,8 +16,10 @@ import {
 } from '@ekavist/shared';
 import { Router } from 'express';
 import { prisma } from '../../db/prisma.js';
+import { notFound } from '../../lib/errors.js';
+import * as authService from '../../services/auth.service.js';
 import * as userService from '../../services/user.service.js';
-import { body, query, requireActor } from '../context.js';
+import { body, clientIp, query, requireActor, userAgent } from '../context.js';
 import { requireAuth, requirePermission } from '../middleware/auth.js';
 import { handler, validate } from '../middleware/validate.js';
 
@@ -113,6 +115,25 @@ userRouter.post(
   handler(async (req, res) => {
     const actor = requireActor(req);
     res.json(await userService.activateUser(prisma, actor, req.params.userId as string));
+  }),
+);
+
+/** For someone who has lost both their phone and their recovery codes. */
+userRouter.post(
+  '/:userId/two-factor/reset',
+  requirePermission('user:update'),
+  handler(async (req, res) => {
+    const actor = requireActor(req);
+    const target = await prisma.user.findFirst({
+      where: { id: req.params.userId as string, organizationId: actor.organizationId },
+      select: { id: true },
+    });
+    if (target == null) throw notFound('That person');
+    await authService.clearTwoFactor(prisma, actor.id, target.id, {
+      ip: clientIp(req),
+      userAgent: userAgent(req),
+    });
+    res.status(204).send();
   }),
 );
 

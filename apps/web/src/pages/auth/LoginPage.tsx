@@ -12,6 +12,9 @@ export function LoginPage() {
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [code, setCode] = useState('');
+  // Shown once the server says this account uses two-factor sign-in.
+  const [needsCode, setNeedsCode] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -20,12 +23,16 @@ export function LoginPage() {
     setError(null);
     setSubmitting(true);
 
-    void signIn(email, password)
+    void signIn(email, password, needsCode ? code : undefined)
       .then(() => {
         const from = (location.state as { from?: string } | null)?.from;
         navigate(from ?? '/', { replace: true });
       })
       .catch((cause: unknown) => {
+        if (cause instanceof ApiError && cause.code === 'TWO_FACTOR_REQUIRED') {
+          setNeedsCode(true);
+          return;
+        }
         setError(
           cause instanceof ApiError
             ? cause
@@ -74,8 +81,28 @@ export function LoginPage() {
           />
         </Field>
 
+        {needsCode && (
+          <Field
+            label="Authentication code"
+            htmlFor="code"
+            required
+            hint="The six-digit code from your authenticator app, or one of your recovery codes."
+          >
+            <Input
+              id="code"
+              autoComplete="one-time-code"
+              inputMode="text"
+              autoFocus
+              required
+              value={code}
+              onChange={(event) => setCode(event.target.value)}
+              placeholder="123456"
+            />
+          </Field>
+        )}
+
         <Button type="submit" variant="primary" loading={submitting} className="mt-1 w-full">
-          Sign in
+          {needsCode ? 'Verify and sign in' : 'Sign in'}
         </Button>
 
         <Link to="/forgot-password" className="self-center text-[13px] text-accent hover:underline">

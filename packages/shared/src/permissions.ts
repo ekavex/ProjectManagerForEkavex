@@ -66,6 +66,8 @@ export const PERMISSIONS = [
   'attendance:read-team',
   'attendance:read-all',
   'import:run',
+  'leave:manage',
+  'role:manage',
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];

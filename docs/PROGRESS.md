@@ -224,18 +224,56 @@ and run. One item genuinely remains.
 **Known gaps, deliberately.**
 
 - No Google Drive API integration; Drive links are labelled by host and nothing claims a
-  connection (D-007).
+  connection (D-007). Other integrations that need an outside service — Google or
+  Microsoft sign-in, SSO, mobile push, calendar sync, AI features — are not built.
+- Project chat has no live delivery in the browser (the Socket.IO server exists, the web
+  app does not connect to it) and no reply or @mention controls, although the API
+  supports both. Left for a later round by decision.
 - No file uploads beyond the Excel importer, which parses in memory and stores nothing.
-- Dependency types other than Finish-to-Start are modelled in the schema but not enforced.
 - The scheduler assumes a single API replica (D-004).
-- No component tests in `apps/web`; UI behaviour is covered by the Playwright journeys
-  alone.
 - No concurrency or soak testing. The load check is one client against an idle server.
-- `PATCH /tasks/:id` silently ignores a `status` field: the schema strips unknown keys and
-  answers 200. Status has its own route, which is what the interface calls. Noticed while
-  writing the Phase 19 tests and left alone as out of scope.
 
 **Accepted risk.** `npm audit` reports `deepmerge-ts` via the Prisma CLI. It is a
 devDependency, absent from the runtime image, and merges only this repository's own
 configuration. Recorded as D-014, together with the correction to what that entry used to
 claim about production installs.
+
+---
+
+## Second round: closing the gap with the specification
+
+A review against the specification found features with an API but no screen, and
+specification items not yet built. Everything that does not need an outside service was
+built in this round.
+
+- **Screens for existing APIs:** adding and removing dependencies on the task panel; a
+  project Settings tab (details, status changes, archive and restore); a Closure tab
+  (checklist, handover note, lessons learned, close); the Excel importer with column
+  mapping, validation and preview; switching the running work session between tasks.
+- **Project lifecycle:** a live project is completed only through the closure checklist
+  (business rule 19); lessons learned have their own endpoints; a new project can start
+  from a copy of another project's plan, shifted to the new start date.
+- **Tasks:** completion criteria per project (business rule 7); all four dependency types
+  enforced as overridable warnings and drawn correctly on the Gantt; `PATCH /tasks/:id`
+  now refuses `status`/`progress` instead of ignoring them.
+- **Gantt:** drag a bar, or either end, to reschedule; arrow keys for keyboard users;
+  tasks with a single date drawn as one-day bars instead of being left off.
+- **Planning:** workstream breakdown and earned value (SPI, CPI, EAC, in hours) on the
+  project dashboard; capacity by person and week; a calendar of deadlines, milestones,
+  phase dates, leave and holidays.
+- **People:** leave requests with balances, manager or administrator approval, attendance
+  marked automatically, and the tasks affected shown; editing a person after creation,
+  including their manager.
+- **Administration:** organisation settings, public holidays, and a role-permission
+  editor.
+- **Security:** two-factor sign-in (TOTP, with ten single-use recovery codes, and an
+  administrator reset).
+- **Notifications:** the header bell polls, and browser notifications are available.
+- **Exports:** CSV for tasks, risks, issues, change requests, decisions, milestones,
+  workload and attendance, with formula injection defused.
+
+Fixed along the way: sorting the task list by any non-date column returned 500; the
+workload report's `projectId` filter widened visibility to projects the caller is not on;
+the holiday lookup ignored the organisation; three Playwright journeys had hard-coded
+dates that had gone stale. The test count is now 344 API tests, 5 web unit tests and 12
+Playwright journeys.

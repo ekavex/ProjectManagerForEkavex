@@ -7,14 +7,21 @@
  */
 import type { Notification } from '@ekavist/shared';
 import { cn } from '../lib/cn.js';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { Badge, Button, Spinner } from '../components/ui/primitives.js';
 import { useToast } from '../components/ui/overlays.js';
 import { useAuth } from '../features/auth/AuthProvider.js';
 import { api } from '../lib/api.js';
+import { useBrowserNotifications } from '../lib/browser-notifications.js';
 import { formatMinutes, formatRelative, initials } from '../lib/format.js';
-import { keys, useAttendanceToday, useNotifications, useSearch } from '../lib/queries.js';
+import {
+  keys,
+  useAttendanceToday,
+  useMyWork,
+  useNotifications,
+  useSearch,
+} from '../lib/queries.js';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 
 interface NavItem {
@@ -43,12 +50,21 @@ export function AppShell({ children }: { children: ReactNode }) {
     { to: '/projects', label: 'Projects', icon: <IconFolder /> },
     { to: '/team', label: 'Team', icon: <IconUsers />, permission: 'user:read' },
     { to: '/attendance', label: 'Attendance', icon: <IconClock /> },
+    { to: '/leave', label: 'Leave', icon: <IconSun /> },
+    { to: '/calendar', label: 'Calendar', icon: <IconCalendar /> },
     { to: '/reports', label: 'Reports', icon: <IconChart /> },
     { to: '/notifications', label: 'Notifications', icon: <IconBell /> },
   ];
 
   const admin: NavItem[] = [
     { to: '/admin/users', label: 'People', icon: <IconUsers />, permission: 'user:create' },
+    {
+      to: '/admin/organization',
+      label: 'Organisation',
+      icon: <IconBuilding />,
+      permission: 'org:settings',
+    },
+    { to: '/admin/roles', label: 'Roles', icon: <IconShield />, permission: 'role:manage' },
     {
       to: '/admin/notifications',
       label: 'Notification rules',
@@ -231,6 +247,8 @@ function AttendanceWidget() {
         {data.isOnBreak && <span className="text-[11px] text-ink-faint">on break</span>}
       </span>
 
+      {!data.isOnBreak && <WorkContextPicker current={data.openSession?.task?.id ?? ''} />}
+
       {data.isOnBreak ? (
         <Button size="sm" loading={act.isPending} onClick={() => act.mutate('break/end')}>
           End break
@@ -252,11 +270,70 @@ function AttendanceWidget() {
   );
 }
 
+/**
+ * Which task the running session is attributed to (spec section 29). Switching closes the
+ * current session and opens another in one step, so the day's total never changes.
+ */
+function WorkContextPicker({ current }: { current: string }) {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const { data } = useMyWork();
+
+  // Overdue first, then today, then upcoming; a task in two lists appears once.
+  const tasks = [
+    ...new Map(
+      [...(data?.overdue ?? []), ...(data?.today ?? []), ...(data?.upcoming ?? [])].map((task) => [
+        task.id,
+        task,
+      ]),
+    ).values(),
+  ];
+
+  const change = useMutation({
+    mutationFn: (taskId: string) => {
+      const task = tasks.find((candidate) => candidate.id === taskId);
+      return api.post('/attendance/switch', {
+        taskId: task?.id ?? null,
+        projectId: task?.project.id ?? null,
+      });
+    },
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: keys.attendanceToday }),
+    onError: (error: unknown) =>
+      toast.error(error instanceof Error ? error.message : 'Could not switch task.'),
+  });
+
+  return (
+    <select
+      aria-label="Task you are working on"
+      className="hidden h-8 max-w-44 truncate rounded-md border border-line-strong bg-surface px-2 text-[12px] text-ink md:block"
+      value={current}
+      disabled={change.isPending}
+      onChange={(event) => change.mutate(event.target.value)}
+    >
+      <option value="">General work</option>
+      {current !== '' && !tasks.some((task) => task.id === current) && (
+        <option value={current}>Current task</option>
+      )}
+      {tasks.map((task) => (
+        <option key={task.id} value={task.id}>
+          {task.reference} {task.name}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 function NotificationBell() {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
-  const { data } = useNotifications({ page: 1, pageSize: 8 });
+  const navigate = useNavigate();
+  const { data } = useNotifications({ page: 1, pageSize: 8 }, { poll: true });
+  const openLink = useCallback(
+    (link: string | null) => navigate(link ?? '/notifications'),
+    [navigate],
+  );
+  useBrowserNotifications(data?.data, openLink);
 
   useEffect(() => {
     if (!open) return;
@@ -478,6 +555,39 @@ function IconUsers() {
       <circle cx="9" cy="8" r="3.2" {...strokeProps} />
       <path d="M3 19.5c0-3 2.7-5 6-5s6 2 6 5" {...strokeProps} />
       <path d="M16 5.5a3 3 0 0 1 0 6M17.5 14.8c2 .7 3.5 2.4 3.5 4.7" {...strokeProps} />
+    </svg>
+  );
+}
+
+function IconCalendar() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3.5" y="5" width="17" height="15" rx="2" {...strokeProps} />
+      <path d="M3.5 10h17M8 3v4M16 3v4" {...strokeProps} />
+    </svg>
+  );
+}
+
+function IconSun() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="4" {...strokeProps} />
+      <path
+        d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"
+        {...strokeProps}
+      />
+    </svg>
+  );
+}
+
+function IconBuilding() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 20.5V5a1.5 1.5 0 0 1 1.5-1.5h8A1.5 1.5 0 0 1 15 5v15.5" {...strokeProps} />
+      <path
+        d="M15 9.5h3.5A1.5 1.5 0 0 1 20 11v9.5M2.5 20.5h19M8 8h3M8 12h3M8 16h3"
+        {...strokeProps}
+      />
     </svg>
   );
 }

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ATTENDANCE_STATUSES } from '../enums.js';
+import { ATTENDANCE_STATUSES, LEAVE_STATUSES, LEAVE_TYPES } from '../enums.js';
 import { dateOnlySchema, idSchema, longText, paginationSchema } from './common.js';
 
 export const startWorkSchema = z.object({
@@ -52,3 +52,38 @@ export const adjustAttendanceSchema = z.object({
   reason: z.string().trim().min(1).max(1000),
 });
 export type AdjustAttendanceInput = z.infer<typeof adjustAttendanceSchema>;
+
+// -------------------------------------------------------------------- leave
+
+export const createLeaveSchema = z
+  .object({
+    type: z.enum(LEAVE_TYPES),
+    startDate: dateOnlySchema,
+    endDate: dateOnlySchema,
+    /** Only for a single day: counts as half a day. */
+    halfDay: z.boolean().default(false),
+    reason: longText(2000),
+  })
+  .refine((v) => v.endDate >= v.startDate, {
+    path: ['endDate'],
+    message: 'The last day cannot be before the first.',
+  })
+  .refine((v) => !v.halfDay || v.startDate === v.endDate, {
+    path: ['halfDay'],
+    message: 'A half day must start and end on the same date.',
+  });
+export type CreateLeaveInput = z.infer<typeof createLeaveSchema>;
+
+export const decideLeaveSchema = z.object({
+  approve: z.boolean(),
+  note: longText(2000),
+});
+export type DecideLeaveInput = z.infer<typeof decideLeaveSchema>;
+
+export const listLeaveQuerySchema = paginationSchema.extend({
+  /** mine: my own requests; review: requests I may decide; all: everyone (leave:manage). */
+  scope: z.enum(['mine', 'review', 'all']).default('mine'),
+  status: z.enum(LEAVE_STATUSES).optional(),
+  userId: idSchema.optional(),
+});
+export type ListLeaveQuery = z.infer<typeof listLeaveQuerySchema>;

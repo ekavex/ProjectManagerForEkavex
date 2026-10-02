@@ -14,6 +14,7 @@ import { formatDate, humanise, PROJECT_STATUS_TONE } from '../../lib/format.js';
 import { useProject } from '../../lib/queries.js';
 import { ChangeRequestsTab } from './ChangeRequestsTab.js';
 import { ChatTab } from './ChatTab.js';
+import { ClosureTab } from './ClosureTab.js';
 import { DocumentsTab } from './DocumentsTab.js';
 import { GanttTab } from './GanttTab.js';
 import { IssuesTab } from './IssuesTab.js';
@@ -24,6 +25,7 @@ import { PhasesTab } from './PhasesTab.js';
 import { RaciTab } from './RaciTab.js';
 import { ReportsTab } from './ReportsTab.js';
 import { RisksTab } from './RisksTab.js';
+import { SettingsTab } from './SettingsTab.js';
 import { TaskDetailPanel } from './TaskDetailPanel.js';
 import { TasksTab } from './TasksTab.js';
 import { TeamTab } from './TeamTab.js';
@@ -70,6 +72,13 @@ export function ProjectPage() {
     { to: `${base}/issues`, label: 'Issues' },
     { to: `${base}/change-requests`, label: 'Changes' },
     { to: `${base}/reports`, label: 'Reports' },
+    // Closure is shown to the lead while the project is live, and to everyone afterwards.
+    ...(can('project:close') || project.status === 'COMPLETED' || project.status === 'ARCHIVED'
+      ? [{ to: `${base}/closure`, label: 'Closure' }]
+      : []),
+    ...(can('project:update') || can('project:archive')
+      ? [{ to: `${base}/settings`, label: 'Settings' }]
+      : []),
   ];
 
   return (
@@ -109,8 +118,15 @@ export function ProjectPage() {
 
       {project.archivedAt != null && (
         <div className="mb-4 rounded-md border border-line-strong bg-canvas px-3 py-2.5 text-[13px] text-ink-soft">
-          This project is archived and is read-only. Restore it from the overview to make changes
-          again.
+          This project is archived and is read-only.{' '}
+          {can('project:update') ? (
+            <Link to={`${base}/settings`} className="text-accent hover:underline">
+              Restore it from Settings
+            </Link>
+          ) : (
+            'Its lead or an administrator can restore it'
+          )}{' '}
+          to make changes again.
         </div>
       )}
 
@@ -137,6 +153,8 @@ export function ProjectPage() {
           element={<ChangeRequestsTab project={project} />}
         />
         <Route path="reports" element={<ReportsTab project={project} />} />
+        <Route path="closure" element={<ClosureTab project={project} />} />
+        <Route path="settings" element={<SettingsTab project={project} />} />
         <Route path="*" element={<Navigate to={base} replace />} />
       </Routes>
     </>

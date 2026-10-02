@@ -1,16 +1,12 @@
 /**
  * Task dependencies (spec section 20).
  *
- * Only Finish-to-Start is enforced in version 1. The rule that matters is that the graph
- * stays acyclic: an edge that would close a cycle is refused before it is written, and the
+ * All four dependency types are accepted; how each is enforced lives in
+ * `dependencyConflicts` (domain/task-rules.ts). The rule that matters here is that the
+ * graph stays acyclic: an edge that would close a cycle is refused before it is written, and the
  * error names the tasks in the loop so the user can see what to change.
  */
-import {
-  ERROR_CODES,
-  SUPPORTED_DEPENDENCY_TYPES,
-  type CreateDependencyInput,
-  type TaskLink,
-} from '@ekavist/shared';
+import { ERROR_CODES, type CreateDependencyInput, type TaskLink } from '@ekavist/shared';
 import type { Db } from '../db/prisma.js';
 import { isUniqueConstraintError } from '../db/prisma.js';
 import { findCycle } from '../domain/dependency.js';
@@ -50,13 +46,6 @@ export async function createDependency(
 ): Promise<DependencyRow[]> {
   assertProjectPermission(context, 'dependency:manage');
   assertProjectMutable(context);
-
-  if (!SUPPORTED_DEPENDENCY_TYPES.includes(input.type)) {
-    throw new AppError(
-      ERROR_CODES.VALIDATION_FAILED,
-      'Only Finish-to-Start dependencies are supported at the moment.',
-    );
-  }
 
   if (input.predecessorId === input.successorId) {
     throw new AppError(ERROR_CODES.TASK_DEPENDENCY_SELF, 'A task cannot depend on itself.');

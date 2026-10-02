@@ -8,7 +8,13 @@
  *     so the whole family is revoked rather than just that token.
  *   * "Forgot password" always answers 204, for the same reason as the first point.
  */
-import { ERROR_CODES, type CurrentUser, type LoginResponse } from '@ekavist/shared';
+import {
+  ERROR_CODES,
+  type CurrentUser,
+  type LoginResponse,
+  type TwoFactorEnrolment,
+  type TwoFactorStatus,
+} from '@ekavist/shared';
 import type { Db, RootDb } from '../db/prisma.js';
 import { env } from '../config/env.js';
 import { AppError } from '../lib/errors.js';
@@ -21,6 +27,13 @@ import {
   refreshTokenExpiry,
   signAccessToken,
 } from '../lib/tokens.js';
+import {
+  generateRecoveryCodes,
+  generateSecret,
+  normaliseRecoveryCode,
+  otpauthUrl,
+  verifyTotp,
+} from '../lib/totp.js';
 import { enqueueEmail } from '../mail/outbox.js';
 import { loadOrgPermissions } from '../policy/actor.js';
 import { recordAuditBestEffort } from './audit.service.js';
@@ -45,12 +58,20 @@ export interface SessionResult {
 
 export async function login(
   db: Db,
-  input: { email: string; password: string },
+  input: { email: string; password: string; code?: string | undefined },
   meta: RequestMeta,
 ): Promise<SessionResult> {
   const user = await db.user.findFirst({
     where: { email: input.email },
-    select: { ...USER_DETAIL_SELECT, passwordHash: true, failedLogins: true, lockedUntil: true },
+    select: {
+      ...USER_DETAIL_SELECT,
+      passwordHash: true,
+      failedLogins: true,
+      lockedUntil: true,
+      totpSecret: true,
+      totpEnabledAt: true,
+      totpRecoveryCodes: true,
+    },
   });
 
   const invalidCredentials = new AppError(
@@ -111,6 +132,42 @@ export async function login(
     );
   }
 
+  // Second factor, checked only once the password is right so it reveals nothing extra.
+  // A missing code is a prompt, not a failure; a wrong one counts towards the lockout.
+  let usedRecoveryCode: string | null = null;
+  if (user.totpEnabledAt != null && user.totpSecret != null) {
+    if (input.code == null) {
+      throw new AppError(
+        ERROR_CODES.TWO_FACTOR_REQUIRED,
+        'Enter the six-digit code from your authenticator app.',
+      );
+    }
+    usedRecoveryCode = matchRecoveryCode(user.totpRecoveryCodes, input.code);
+    if (!verifyTotp(user.totpSecret, input.code) && usedRecoveryCode == null) {
+      const failed = user.failedLogins + 1;
+      await db.user.update({
+        where: { id: user.id },
+        data: {
+          failedLogins: failed,
+          lockedUntil:
+            failed >= LOCK_THRESHOLD ? new Date(Date.now() + LOCK_MINUTES * 60_000) : null,
+        },
+      });
+      await recordAuditBestEffort(db, {
+        actorId: user.id,
+        action: 'auth.two-factor.failed',
+        entityType: 'User',
+        entityId: user.id,
+        ip: meta.ip,
+        userAgent: meta.userAgent,
+      });
+      throw new AppError(
+        ERROR_CODES.TWO_FACTOR_INVALID,
+        'That code is not valid. Check the time on your phone, or use a recovery code.',
+      );
+    }
+  }
+
   // Transparent upgrade if the hashing parameters have since been strengthened.
   const rehash = needsRehash(user.passwordHash) ? await hashPassword(input.password) : null;
 
@@ -121,6 +178,12 @@ export async function login(
       lockedUntil: null,
       lastLoginAt: new Date(),
       ...(rehash != null ? { passwordHash: rehash } : {}),
+      // A recovery code works once.
+      ...(usedRecoveryCode != null
+        ? {
+            totpRecoveryCodes: user.totpRecoveryCodes.filter((hash) => hash !== usedRecoveryCode),
+          }
+        : {}),
     },
   });
 
@@ -408,4 +471,152 @@ export async function purgeExpiredTokens(db: Db): Promise<{ refresh: number; res
     db.passwordResetToken.deleteMany({ where: { expiresAt: { lt: cutoff } } }),
   ]);
   return { refresh: refresh.count, reset: reset.count };
+}
+
+// ---------------------------------------------------------------- two-factor
+
+/** The stored hash that the presented recovery code matches, or null. */
+function matchRecoveryCode(hashes: readonly string[], code: string): string | null {
+  const normalised = normaliseRecoveryCode(code);
+  if (normalised.length !== 10) return null;
+  const hash = hashToken(normalised);
+  return hashes.includes(hash) ? hash : null;
+}
+
+export async function getTwoFactorStatus(db: Db, userId: string): Promise<TwoFactorStatus> {
+  const user = await db.user.findUniqueOrThrow({
+    where: { id: userId },
+    select: { totpEnabledAt: true, totpRecoveryCodes: true },
+  });
+  return {
+    enabled: user.totpEnabledAt != null,
+    enabledAt: user.totpEnabledAt?.toISOString() ?? null,
+    recoveryCodesRemaining: user.totpEnabledAt == null ? 0 : user.totpRecoveryCodes.length,
+  };
+}
+
+/**
+ * Starts enrolment: a fresh secret is stored but does nothing until a code generated from
+ * it is confirmed, so an abandoned enrolment never locks anyone out.
+ */
+export async function beginTwoFactorEnrolment(db: Db, userId: string): Promise<TwoFactorEnrolment> {
+  const user = await db.user.findUniqueOrThrow({
+    where: { id: userId },
+    select: { email: true, totpEnabledAt: true, organization: { select: { name: true } } },
+  });
+  if (user.totpEnabledAt != null) {
+    throw new AppError(
+      ERROR_CODES.TWO_FACTOR_ALREADY_ENABLED,
+      'Two-factor sign-in is already on. Turn it off first to enrol a new device.',
+    );
+  }
+  const secret = generateSecret();
+  await db.user.update({ where: { id: userId }, data: { totpSecret: secret } });
+  return {
+    secret,
+    otpauthUrl: otpauthUrl(secret, user.email, user.organization.name || 'Ekavist'),
+  };
+}
+
+/** Confirms enrolment and returns the recovery codes, which are shown exactly once. */
+export async function confirmTwoFactor(
+  db: RootDb,
+  userId: string,
+  code: string,
+  meta: RequestMeta,
+): Promise<{ recoveryCodes: string[] }> {
+  const user = await db.user.findUniqueOrThrow({
+    where: { id: userId },
+    select: { totpSecret: true, totpEnabledAt: true },
+  });
+  if (user.totpEnabledAt != null) {
+    throw new AppError(ERROR_CODES.TWO_FACTOR_ALREADY_ENABLED, 'Two-factor sign-in is already on.');
+  }
+  if (user.totpSecret == null || !verifyTotp(user.totpSecret, code)) {
+    throw new AppError(
+      ERROR_CODES.TWO_FACTOR_INVALID,
+      'That code does not match. Make sure the app shows Ekavist and try the newest code.',
+    );
+  }
+
+  const recoveryCodes = generateRecoveryCodes();
+  await db.$transaction(async (tx) => {
+    await tx.user.update({
+      where: { id: userId },
+      data: {
+        totpEnabledAt: new Date(),
+        totpRecoveryCodes: recoveryCodes.map((item) => hashToken(normaliseRecoveryCode(item))),
+      },
+    });
+    await tx.auditLog.create({
+      data: {
+        actorId: userId,
+        action: 'auth.two-factor.enabled',
+        entityType: 'User',
+        entityId: userId,
+        ip: meta.ip,
+        userAgent: meta.userAgent,
+      },
+    });
+  });
+  return { recoveryCodes };
+}
+
+/** Turning it off needs both the password and a current code. */
+export async function disableTwoFactor(
+  db: RootDb,
+  userId: string,
+  input: { password: string; code: string },
+  meta: RequestMeta,
+): Promise<void> {
+  const user = await db.user.findUniqueOrThrow({
+    where: { id: userId },
+    select: {
+      passwordHash: true,
+      totpSecret: true,
+      totpEnabledAt: true,
+      totpRecoveryCodes: true,
+    },
+  });
+  if (user.totpEnabledAt == null || user.totpSecret == null) {
+    throw new AppError(ERROR_CODES.TWO_FACTOR_NOT_ENABLED, 'Two-factor sign-in is not on.');
+  }
+  if (user.passwordHash == null || !(await verifyPassword(user.passwordHash, input.password))) {
+    throw new AppError(ERROR_CODES.PASSWORD_INCORRECT, 'Your password is not correct.');
+  }
+  if (
+    !verifyTotp(user.totpSecret, input.code) &&
+    matchRecoveryCode(user.totpRecoveryCodes, input.code) == null
+  ) {
+    throw new AppError(ERROR_CODES.TWO_FACTOR_INVALID, 'That code is not valid.');
+  }
+  await clearTwoFactor(db, userId, userId, meta);
+}
+
+/**
+ * Removes two-factor from an account. Used by the owner, and by an administrator when
+ * someone has lost their phone and their recovery codes.
+ */
+export async function clearTwoFactor(
+  db: RootDb,
+  actorId: string,
+  userId: string,
+  meta: RequestMeta,
+): Promise<void> {
+  await db.$transaction(async (tx) => {
+    await tx.user.update({
+      where: { id: userId },
+      data: { totpSecret: null, totpEnabledAt: null, totpRecoveryCodes: [] },
+    });
+    await tx.auditLog.create({
+      data: {
+        actorId,
+        action: actorId === userId ? 'auth.two-factor.disabled' : 'auth.two-factor.reset',
+        entityType: 'User',
+        entityId: userId,
+        ip: meta.ip,
+        userAgent: meta.userAgent,
+      },
+    });
+  });
 }

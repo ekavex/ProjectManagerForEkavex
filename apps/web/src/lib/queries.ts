@@ -8,18 +8,25 @@ import type {
   ActivityEntry,
   AttendanceDay,
   AttendanceToday,
+  CalendarEvent,
+  CapacityReport,
   ChangeRequest,
+  ClosureChecklist,
   CompanyDashboard,
   DecisionLogEntry,
   Department,
   EmployeeDashboard,
   GanttResponse,
+  Holiday,
   Issue,
   LeadDashboard,
+  LeaveBalance,
+  LeaveRequest,
   Message,
   Milestone,
   MyWork,
   Notification,
+  OrganizationSettings,
   Paginated,
   PersonalNote,
   Phase,
@@ -27,17 +34,20 @@ import type {
   ProjectDetail,
   ProjectDocument,
   ProjectHealth,
+  ProjectLesson,
   ProjectMember,
   ProjectNote,
   ProjectSummary,
   RaciMatrix,
   Risk,
+  RolePermissionRow,
   SearchHit,
   SharedResource,
   TaskDetail,
   TaskSummary,
   TeamAttendanceRow,
   TimelineEntry,
+  TwoFactorStatus,
   UserDetail,
   WbsNode,
 } from '@ekavist/shared';
@@ -94,6 +104,7 @@ export const keys = {
     ['projects', id, 'activity', params ?? {}] as const,
   timeline: (id: string) => ['projects', id, 'timeline'] as const,
   closure: (id: string) => ['projects', id, 'closure'] as const,
+  lessons: (id: string) => ['projects', id, 'lessons'] as const,
   dailyReport: (id: string, date?: string) => ['projects', id, 'reports', 'daily', date] as const,
   weeklyReport: (id: string, weekOf?: string) =>
     ['projects', id, 'reports', 'weekly', weekOf] as const,
@@ -109,6 +120,15 @@ export const keys = {
   workload: (params?: QueryParams) => ['reports', 'workload', params ?? {}] as const,
   audit: (params?: QueryParams) => ['audit', params ?? {}] as const,
   search: (term: string) => ['search', term] as const,
+
+  organization: ['organization'] as const,
+  holidays: (year?: number) => ['organization', 'holidays', year] as const,
+  roles: ['organization', 'roles'] as const,
+  leave: (params?: QueryParams) => ['leave', params ?? {}] as const,
+  leaveBalance: (params?: QueryParams) => ['leave', 'balance', params ?? {}] as const,
+  calendar: (params?: QueryParams) => ['calendar', params ?? {}] as const,
+  capacity: (params?: QueryParams) => ['reports', 'capacity', params ?? {}] as const,
+  twoFactor: ['me', 'two-factor'] as const,
 };
 
 /** A collection endpoint that answers `{ data: [...] }` rather than a page. */
@@ -357,10 +377,17 @@ export interface NotificationPage extends Paginated<Notification> {
   unreadCount: number;
 }
 
-export const useNotifications = (params: QueryParams): UseQueryResult<NotificationPage> =>
+export const useNotifications = (
+  params: QueryParams,
+  options: { poll?: boolean } = {},
+): UseQueryResult<NotificationPage> =>
   useQuery({
     queryKey: keys.notifications(params),
     queryFn: () => api.get<NotificationPage>('/notifications', params),
+    // The header bell polls, so a new assignment shows without a reload.
+    ...(options.poll === true
+      ? { refetchInterval: 60_000, refetchIntervalInBackground: true }
+      : {}),
   });
 
 // ----------------------------------------------------------------- search
@@ -371,4 +398,74 @@ export const useSearch = (term: string): UseQueryResult<SearchHit[]> =>
     queryFn: async () => (await api.get<Collection<SearchHit>>('/search', { q: term })).data,
     // Two characters is the server's minimum; below that there is nothing to ask for.
     enabled: term.trim().length >= 2,
+  });
+
+// ------------------------------------------------------------------- closure
+
+export const useClosure = (id: string): UseQueryResult<ClosureChecklist> =>
+  useQuery({
+    queryKey: keys.closure(id),
+    queryFn: () => api.get<ClosureChecklist>(`/projects/${id}/closure`),
+  });
+
+export const useLessons = (id: string): UseQueryResult<ProjectLesson[]> =>
+  useQuery({
+    queryKey: keys.lessons(id),
+    queryFn: async () => (await api.get<Collection<ProjectLesson>>(`/projects/${id}/lessons`)).data,
+  });
+
+// -------------------------------------------------------------- organisation
+
+export const useOrganization = (): UseQueryResult<OrganizationSettings> =>
+  useQuery({
+    queryKey: keys.organization,
+    queryFn: () => api.get<OrganizationSettings>('/organization'),
+  });
+
+export const useHolidays = (year?: number): UseQueryResult<Holiday[]> =>
+  useQuery({
+    queryKey: keys.holidays(year),
+    queryFn: async () =>
+      (await api.get<Collection<Holiday>>('/organization/holidays', { year })).data,
+  });
+
+export const useRolePermissions = (): UseQueryResult<RolePermissionRow[]> =>
+  useQuery({
+    queryKey: keys.roles,
+    queryFn: async () => (await api.get<Collection<RolePermissionRow>>('/organization/roles')).data,
+  });
+
+// --------------------------------------------------------------------- leave
+
+export const useLeave = (params: QueryParams): UseQueryResult<Paginated<LeaveRequest>> =>
+  useQuery({
+    queryKey: keys.leave(params),
+    queryFn: () => api.get<Paginated<LeaveRequest>>('/leave', params),
+  });
+
+export const useLeaveBalance = (params: QueryParams): UseQueryResult<LeaveBalance> =>
+  useQuery({
+    queryKey: keys.leaveBalance(params),
+    queryFn: () => api.get<LeaveBalance>('/leave/balance', params),
+  });
+
+// ----------------------------------------------------------------- planning
+
+export const useCalendar = (params: QueryParams): UseQueryResult<CalendarEvent[]> =>
+  useQuery({
+    queryKey: keys.calendar(params),
+    queryFn: async () => (await api.get<Collection<CalendarEvent>>('/calendar', params)).data,
+  });
+
+export const useCapacity = (params: QueryParams, enabled = true): UseQueryResult<CapacityReport> =>
+  useQuery({
+    queryKey: keys.capacity(params),
+    queryFn: () => api.get<CapacityReport>('/reports/capacity', params),
+    enabled,
+  });
+
+export const useTwoFactorStatus = (): UseQueryResult<TwoFactorStatus> =>
+  useQuery({
+    queryKey: keys.twoFactor,
+    queryFn: () => api.get<TwoFactorStatus>('/auth/two-factor'),
   });

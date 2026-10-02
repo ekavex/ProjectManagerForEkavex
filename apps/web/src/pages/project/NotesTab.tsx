@@ -5,6 +5,7 @@
  * reachable from a project. The decision log is separate on purpose: a decision is part of
  * the project record, not a note someone may later edit away.
  */
+import { ExportButton } from '../../components/ExportButton.js';
 import type { CreateDecisionInput, CreateProjectNoteInput, ProjectDetail } from '@ekavist/shared';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState, type FormEvent } from 'react';
@@ -252,11 +253,16 @@ function DecisionLog({ project }: { project: ProjectDetail }) {
         title="Decision log"
         description="What was decided, when, by whom and why."
         action={
-          canManage ? (
-            <Button size="sm" onClick={() => setAdding(true)}>
-              Record a decision
-            </Button>
-          ) : undefined
+          <div className="flex gap-2">
+            {project.capabilities.includes('report:export') && (
+              <ExportButton path={`/projects/${project.id}/export/decisions`} />
+            )}
+            {canManage && (
+              <Button size="sm" onClick={() => setAdding(true)}>
+                Record a decision
+              </Button>
+            )}
+          </div>
         }
       >
         {isLoading ? (

@@ -567,6 +567,7 @@ export async function adjustDay(
 // ------------------------------------------------------------------ helpers
 
 interface OrganizationSettings {
+  id: string;
   timezone: string;
   lateAfter: string;
   halfDayMinutes: number;
@@ -575,7 +576,7 @@ interface OrganizationSettings {
 async function loadOrganization(db: Db, organizationId: string): Promise<OrganizationSettings> {
   return db.organization.findUniqueOrThrow({
     where: { id: organizationId },
-    select: { timezone: true, lateAfter: true, halfDayMinutes: true },
+    select: { id: true, timezone: true, lateAfter: true, halfDayMinutes: true },
   });
 }
 
@@ -610,7 +611,10 @@ async function refreshDay(
   const totals = dayTotals(day.sessions.map(toSpan), now);
   const workDate = dateColumnToDateOnly(day.workDate) as DateOnly;
 
-  const isHoliday = (await db.holiday.count({ where: { date: day.workDate } })) > 0;
+  const isHoliday =
+    (await db.holiday.count({
+      where: { organizationId: organization.id, date: day.workDate },
+    })) > 0;
 
   // An administrator's correction is not overwritten by the automatic derivation.
   const status =

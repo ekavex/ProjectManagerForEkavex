@@ -184,13 +184,71 @@ export const api = {
   delete: <T>(path: string, body?: unknown) => request<T>(path, { method: 'DELETE', body }),
 };
 
+/** Sends a multipart form, such as a workbook for the Excel importer. */
+export async function upload<T>(path: string, form: FormData): Promise<T> {
+  const send = () =>
+    fetch(buildUrl(path), {
+      method: 'POST',
+      headers: accessToken != null ? { Authorization: `Bearer ${accessToken}` } : {},
+      credentials: 'include',
+      body: form,
+    });
+
+  let response = await send();
+  if (response.status === 401 && (await refreshSession())) response = await send();
+  const text = await response.text();
+  const payload: unknown = text.length > 0 ? safeParse(text) : undefined;
+  if (!response.ok) throw toApiError(payload, response.status);
+  return payload as T;
+}
+
+/**
+ * Downloads a file the API generates, such as a CSV export.
+ *
+ * A plain link cannot carry the access token, so the file is fetched with it and handed
+ * to the browser as a blob. The server's file name is used when it sends one.
+ */
+export async function download(
+  path: string,
+  query?: RequestOptions['query'],
+  fallbackName = 'export.csv',
+): Promise<void> {
+  const fetchOnce = () =>
+    fetch(buildUrl(path, query), {
+      headers: accessToken != null ? { Authorization: `Bearer ${accessToken}` } : {},
+      credentials: 'include',
+    });
+
+  let response = await fetchOnce();
+  if (response.status === 401 && (await refreshSession())) response = await fetchOnce();
+  if (!response.ok) {
+    const payload: unknown = await response.json().catch(() => undefined);
+    throw toApiError(payload, response.status);
+  }
+
+  const disposition = response.headers.get('Content-Disposition') ?? '';
+  const name = /filename="([^"]+)"/.exec(disposition)?.[1] ?? fallbackName;
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 /** Login and refresh bypass the token plumbing above, so they are separate. */
-export async function login(email: string, password: string): Promise<LoginResponse> {
+export async function login(
+  email: string,
+  password: string,
+  code?: string,
+): Promise<LoginResponse> {
   const response = await fetch(buildUrl('/auth/login'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ email, password, ...(code != null && code !== '' ? { code } : {}) }),
   });
 
   const payload: unknown = await response.json().catch(() => undefined);

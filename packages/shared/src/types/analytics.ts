@@ -79,6 +79,43 @@ export interface ProjectDashboard {
   recentActivity: ActivityEntry[];
   recentMessages: Message[];
   keyDocuments: { id: string; name: string; url: string; category: string }[];
+  workstreams: WorkstreamRow[];
+  earnedValue: EarnedValueMetrics;
+}
+
+/** Task counts per phase, the workstream breakdown of spec section 49. */
+export interface WorkstreamRow {
+  id: string | null;
+  name: string;
+  total: number;
+  completed: number;
+  inProgress: number;
+  notStarted: number;
+  blocked: number;
+  overdue: number;
+  progress: number;
+}
+
+/**
+ * Earned-value metrics (spec sections 52 and 53), measured in estimated hours because
+ * that is the unit every task carries. SPI = EV / PV, CPI = EV / AC.
+ */
+export interface EarnedValueMetrics {
+  asOf: string;
+  unit: 'HOURS';
+  budgetAtCompletion: number;
+  plannedValue: number;
+  earnedValue: number;
+  actualCost: number;
+  scheduleVariance: number;
+  costVariance: number;
+  /** Null when there is nothing planned yet (PV of zero). */
+  spi: number | null;
+  /** Null when no actual hours have been recorded. */
+  cpi: number | null;
+  estimateAtCompletion: number | null;
+  /** Open tasks without an estimate, which the figures cannot account for. */
+  tasksWithoutEstimate: number;
 }
 
 // ------------------------------------------------------- employee dashboard
@@ -285,6 +322,13 @@ export interface ImportPreview {
   checksum: string;
   sheets: string[];
   detectedColumns: string[];
+  /** The mapping actually applied (guessed from the headers unless one was sent). */
+  mapping: {
+    sheet: string;
+    headerRow: number;
+    columns: Record<string, string>;
+    createMissingUsers: boolean;
+  };
   rows: ImportPreviewRow[];
   issues: ImportIssue[];
   summary: {
@@ -321,4 +365,49 @@ export interface ClosureChecklist {
     detail: string;
   }[];
   canClose: boolean;
+}
+
+// ----------------------------------------------------------------- capacity
+
+export interface CapacityWeek {
+  weekStart: string;
+  /** Working hours available after weekends, holidays, approved leave and allocation. */
+  capacityHours: number;
+  /** Remaining estimated hours of open tasks spread evenly over their working days. */
+  plannedHours: number;
+  leaveDays: number;
+  /** plannedHours / capacityHours as a percentage; null when there is no capacity. */
+  utilisation: number | null;
+}
+
+export interface CapacityRow {
+  user: UserSummary;
+  projects: number;
+  allocationPercent: number;
+  weeks: CapacityWeek[];
+}
+
+export interface CapacityReport {
+  from: string;
+  weeks: number;
+  rows: CapacityRow[];
+  generatedAt: string;
+}
+
+// ----------------------------------------------------------------- calendar
+
+export type CalendarEventKind =
+  'TASK_DUE' | 'MILESTONE' | 'PHASE_START' | 'PHASE_END' | 'LEAVE' | 'HOLIDAY';
+
+export interface CalendarEvent {
+  id: string;
+  kind: CalendarEventKind;
+  date: string;
+  /** Inclusive end for multi-day events such as leave. */
+  endDate: string | null;
+  title: string;
+  projectId: string | null;
+  projectCode: string | null;
+  link: string | null;
+  status: string | null;
 }

@@ -9,6 +9,7 @@ import {
   type ChangeProjectStatusInput,
   type CloseProjectInput,
   type ClosureChecklist,
+  type CreateLessonInput,
   type CreateProjectInput,
   type HealthLevel,
   type ListProjectsQuery,
@@ -16,6 +17,7 @@ import {
   type Permission,
   type ProjectDetail,
   type ProjectHealth,
+  type ProjectLesson,
   type ProjectMember,
   type ProjectStatus,
   type ProjectSummary,
@@ -27,9 +29,10 @@ import type { Prisma } from '@prisma/client';
 import type { Db, RootDb } from '../db/prisma.js';
 import { isUniqueConstraintError } from '../db/prisma.js';
 import { canPhaseStart } from '../domain/phase-gate.js';
+import { allowedProjectTransitions, canCloseFrom } from '../domain/project-status.js';
 import { isOpenIssue, isOpenRisk, riskLevelRank } from '../domain/risk.js';
 import { projectHealth, scheduleMetrics, worstLevel } from '../domain/schedule.js';
-import { countTasks, emptyTaskCounts } from '../domain/task-rules.js';
+import { countTasks, emptyTaskCounts, isDependencyViolated } from '../domain/task-rules.js';
 import {
   dateColumnToDateOnly,
   dateOnlyToDateColumn,
@@ -47,6 +50,7 @@ import {
 import { recordActivity, recordAudit, recordChange, diffValues } from './audit.service.js';
 import { notify, notifyMany, projectAudience } from './notification.service.js';
 import { pageMeta, paginate } from './pagination.js';
+import { copyProjectStructure } from './project-template.service.js';
 import {
   PROJECT_DETAIL_SELECT,
   PROJECT_SUMMARY_SELECT,
@@ -54,23 +58,6 @@ import {
   toProjectSummary,
 } from './project.mapper.js';
 import { USER_SUMMARY_SELECT, toUserSummary } from './user.mapper.js';
-
-/**
- * Status transitions.
- *
- * The map is explicit rather than "anything goes" so that a project cannot jump from
- * DRAFT straight to COMPLETED, which would leave the phase and closure records empty.
- */
-const ALLOWED_TRANSITIONS: Record<ProjectStatus, readonly ProjectStatus[]> = {
-  DRAFT: ['PLANNED', 'ACTIVE', 'CANCELLED'],
-  PLANNED: ['DRAFT', 'ACTIVE', 'ON_HOLD', 'CANCELLED'],
-  ACTIVE: ['ON_HOLD', 'AT_RISK', 'COMPLETED', 'CANCELLED'],
-  ON_HOLD: ['ACTIVE', 'AT_RISK', 'CANCELLED'],
-  AT_RISK: ['ACTIVE', 'ON_HOLD', 'COMPLETED', 'CANCELLED'],
-  COMPLETED: ['ARCHIVED', 'ACTIVE'],
-  CANCELLED: ['ARCHIVED', 'DRAFT'],
-  ARCHIVED: ['ACTIVE', 'COMPLETED'],
-};
 
 // --------------------------------------------------------------------- list
 
@@ -248,69 +235,90 @@ export async function createProject(
     if (found === 0) throw notFound('That department');
   }
 
+  // The template must be a project the creator can see; anything else reads as not found.
+  const template =
+    input.templateProjectId == null
+      ? null
+      : await loadProjectContext(db, actor, input.templateProjectId);
+
   const projectId = await db
-    .$transaction(async (tx) => {
-      const project = await tx.project.create({
-        data: {
-          organizationId: actor.organizationId,
-          code: input.code,
-          name: input.name,
-          description: input.description ?? null,
-          leadId: lead.id,
-          createdById: actor.id,
-          startDate: dateOnlyToDateColumn(input.startDate) as Date,
-          plannedEndDate: dateOnlyToDateColumn(input.plannedEndDate) as Date,
-          priority: input.priority,
-          category: input.category ?? null,
-          client: input.client ?? null,
-          departmentId: input.departmentId ?? null,
-          budget: input.budget ?? null,
-          location: input.location ?? null,
-          externalStakeholder: input.externalStakeholder ?? null,
-          logoUrl: input.logoUrl ?? null,
-          objectives: input.objectives,
-          deliverables: input.deliverables,
-          // Business rule 1: every project has a lead, and the lead is a member.
-          members: {
-            create: { userId: lead.id, projectRole: 'LEAD', canReadChat: true },
+    .$transaction(
+      async (tx) => {
+        const project = await tx.project.create({
+          data: {
+            organizationId: actor.organizationId,
+            code: input.code,
+            name: input.name,
+            description: input.description ?? null,
+            leadId: lead.id,
+            createdById: actor.id,
+            startDate: dateOnlyToDateColumn(input.startDate) as Date,
+            plannedEndDate: dateOnlyToDateColumn(input.plannedEndDate) as Date,
+            priority: input.priority,
+            category: input.category ?? null,
+            client: input.client ?? null,
+            departmentId: input.departmentId ?? null,
+            budget: input.budget ?? null,
+            location: input.location ?? null,
+            externalStakeholder: input.externalStakeholder ?? null,
+            logoUrl: input.logoUrl ?? null,
+            objectives: input.objectives,
+            deliverables: input.deliverables,
+            // Business rule 1: every project has a lead, and the lead is a member.
+            members: {
+              create: { userId: lead.id, projectRole: 'LEAD', canReadChat: true },
+            },
+            ...(input.useDefaultPhases && template == null
+              ? {
+                  phases: {
+                    create: DEFAULT_PHASE_TEMPLATE.map((phase, index) => ({
+                      sequence: index + 1,
+                      name: phase.name,
+                      description: phase.description,
+                    })),
+                  },
+                }
+              : {}),
           },
-          ...(input.useDefaultPhases
-            ? {
-                phases: {
-                  create: DEFAULT_PHASE_TEMPLATE.map((phase, index) => ({
-                    sequence: index + 1,
-                    name: phase.name,
-                    description: phase.description,
-                  })),
-                },
-              }
-            : {}),
-        },
-        select: { id: true, code: true, name: true, plannedEndDate: true },
-      });
+          select: { id: true, code: true, name: true, plannedEndDate: true },
+        });
 
-      await recordChange(
-        tx,
-        {
-          actorId: actor.id,
-          projectId: project.id,
-          action: 'project.created',
-          entityType: 'Project',
-          entityId: project.id,
-          newValue: { code: project.code, name: project.name, leadId: lead.id },
-        },
-        {
-          projectId: project.id,
-          actorId: actor.id,
-          verb: 'created',
-          summary: `${actor.fullName} created the project`,
-          entityType: 'Project',
-          entityId: project.id,
-        },
-      );
+        const copied =
+          template == null
+            ? null
+            : await copyProjectStructure(tx, template.projectId, project.id, input.startDate);
 
-      return project;
-    })
+        await recordChange(
+          tx,
+          {
+            actorId: actor.id,
+            projectId: project.id,
+            action: 'project.created',
+            entityType: 'Project',
+            entityId: project.id,
+            newValue: {
+              code: project.code,
+              name: project.name,
+              leadId: lead.id,
+              ...(copied != null
+                ? { templateProjectId: template?.projectId, copiedFromTemplate: copied }
+                : {}),
+            },
+          },
+          {
+            projectId: project.id,
+            actorId: actor.id,
+            verb: 'created',
+            summary: `${actor.fullName} created the project`,
+            entityType: 'Project',
+            entityId: project.id,
+          },
+        );
+
+        return project;
+      },
+      { timeout: 30_000 },
+    )
     .catch((error: unknown) => {
       if (isUniqueConstraintError(error, 'code')) {
         throw new AppError(
@@ -376,6 +384,10 @@ export async function updateProject(
       logoUrl: true,
       objectives: true,
       deliverables: true,
+      handoverNote: true,
+      completionRequiresNote: true,
+      completionRequiresActualHours: true,
+      completionRequiresAttachment: true,
     },
   });
 
@@ -430,6 +442,16 @@ export async function updateProject(
     ...(input.logoUrl !== undefined ? { logoUrl: input.logoUrl ?? null } : {}),
     ...(input.objectives != null ? { objectives: input.objectives } : {}),
     ...(input.deliverables != null ? { deliverables: input.deliverables } : {}),
+    ...(input.handoverNote !== undefined ? { handoverNote: input.handoverNote } : {}),
+    ...(input.completionRequiresNote != null
+      ? { completionRequiresNote: input.completionRequiresNote }
+      : {}),
+    ...(input.completionRequiresActualHours != null
+      ? { completionRequiresActualHours: input.completionRequiresActualHours }
+      : {}),
+    ...(input.completionRequiresAttachment != null
+      ? { completionRequiresAttachment: input.completionRequiresAttachment }
+      : {}),
   };
 
   await db.$transaction(async (tx) => {
@@ -526,7 +548,13 @@ export async function changeProjectStatus(
     return getProject(db, actor, context.projectId, context);
   }
 
-  const allowed = ALLOWED_TRANSITIONS[project.status];
+  const allowed = allowedProjectTransitions(project.status);
+  if (input.status === 'COMPLETED' && canCloseFrom(project.status)) {
+    throw new AppError(
+      ERROR_CODES.PROJECT_STATUS_TRANSITION_INVALID,
+      'A project is completed through the closure checklist, not by changing its status.',
+    );
+  }
   if (!allowed.includes(input.status)) {
     throw new AppError(
       ERROR_CODES.PROJECT_STATUS_TRANSITION_INVALID,
@@ -883,8 +911,9 @@ export async function getProjectHealth(
     db.risk.findMany({ where: { projectId }, select: { status: true, severity: true } }),
     db.issue.findMany({ where: { projectId }, select: { status: true } }),
     db.taskDependency.findMany({
-      where: { projectId, type: 'FINISH_TO_START' },
+      where: { projectId, predecessor: { deletedAt: null }, successor: { deletedAt: null } },
       select: {
+        type: true,
         predecessor: { select: { status: true } },
         successor: { select: { status: true } },
       },
@@ -896,12 +925,12 @@ export async function getProjectHealth(
     todayDate,
   );
 
-  const violated = dependencies.filter(
-    (dependency) =>
-      dependency.predecessor.status !== 'COMPLETED' &&
-      dependency.predecessor.status !== 'CANCELLED' &&
-      dependency.successor.status !== 'NOT_STARTED' &&
-      dependency.successor.status !== 'CANCELLED',
+  const violated = dependencies.filter((dependency) =>
+    isDependencyViolated(
+      dependency.type,
+      dependency.predecessor.status,
+      dependency.successor.status,
+    ),
   ).length;
 
   const overdueGates = phases.filter((phase) => {
@@ -1043,6 +1072,14 @@ export async function closeProject(
 ): Promise<ProjectDetail> {
   assertProjectPermission(context, 'project:close');
   assertProjectMutable(context);
+  if (!canCloseFrom(context.status as ProjectStatus)) {
+    throw new AppError(
+      ERROR_CODES.PROJECT_STATUS_TRANSITION_INVALID,
+      `Only an active or at-risk project can be closed. This one is ${label(
+        context.status as ProjectStatus,
+      )}.`,
+    );
+  }
 
   // The note is part of the checklist, so it is saved before the checklist is evaluated.
   if (input.handoverNote != null) {
@@ -1132,6 +1169,110 @@ export async function closeProject(
   );
 
   return getProject(db, actor, context.projectId, context);
+}
+
+// ------------------------------------------------------------------- lessons
+
+const LESSON_SELECT = {
+  id: true,
+  category: true,
+  note: true,
+  createdAt: true,
+  author: { select: USER_SUMMARY_SELECT },
+} satisfies Prisma.ProjectLessonSelect;
+
+function toLesson(
+  row: Prisma.ProjectLessonGetPayload<{ select: typeof LESSON_SELECT }>,
+): ProjectLesson {
+  return {
+    id: row.id,
+    category: row.category,
+    note: row.note,
+    author: row.author == null ? null : toUserSummary(row.author),
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
+export async function listLessons(db: Db, projectId: string): Promise<ProjectLesson[]> {
+  const rows = await db.projectLesson.findMany({
+    where: { projectId },
+    orderBy: { createdAt: 'asc' },
+    select: LESSON_SELECT,
+  });
+  return rows.map(toLesson);
+}
+
+/**
+ * Lessons learned (spec section 83). They are recorded while closing and may still be
+ * added once the project is complete, which is when most of them are understood; an
+ * archived project stays read-only.
+ */
+function assertLessonsWritable(context: ProjectContext): void {
+  assertProjectPermission(context, 'project:close');
+  if (context.archivedAt != null) {
+    throw new AppError(
+      ERROR_CODES.PROJECT_READ_ONLY,
+      'This project is archived. Restore it before making changes.',
+    );
+  }
+  if (context.status === 'CANCELLED') {
+    throw new AppError(ERROR_CODES.PROJECT_READ_ONLY, 'This project was cancelled.');
+  }
+}
+
+export async function addLesson(
+  db: RootDb,
+  actor: Actor,
+  context: ProjectContext,
+  input: CreateLessonInput,
+): Promise<ProjectLesson> {
+  assertLessonsWritable(context);
+  const row = await db.$transaction(async (tx) => {
+    const created = await tx.projectLesson.create({
+      data: {
+        projectId: context.projectId,
+        category: input.category,
+        note: input.note,
+        authorId: actor.id,
+      },
+      select: LESSON_SELECT,
+    });
+    await recordAudit(tx, {
+      actorId: actor.id,
+      projectId: context.projectId,
+      action: 'lesson.created',
+      entityType: 'ProjectLesson',
+      entityId: created.id,
+      newValue: { category: input.category, note: input.note },
+    });
+    return created;
+  });
+  return toLesson(row);
+}
+
+export async function deleteLesson(
+  db: RootDb,
+  actor: Actor,
+  context: ProjectContext,
+  lessonId: string,
+): Promise<void> {
+  assertLessonsWritable(context);
+  const lesson = await db.projectLesson.findFirst({
+    where: { id: lessonId, projectId: context.projectId },
+    select: { id: true, category: true, note: true },
+  });
+  if (lesson == null) throw notFound('That lesson');
+  await db.$transaction(async (tx) => {
+    await tx.projectLesson.delete({ where: { id: lessonId } });
+    await recordAudit(tx, {
+      actorId: actor.id,
+      projectId: context.projectId,
+      action: 'lesson.deleted',
+      entityType: 'ProjectLesson',
+      entityId: lessonId,
+      oldValue: { category: lesson.category, note: lesson.note },
+    });
+  });
 }
 
 // -------------------------------------------------------------------- delete

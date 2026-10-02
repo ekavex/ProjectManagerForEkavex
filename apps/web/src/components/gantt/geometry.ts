@@ -163,13 +163,24 @@ export interface DependencyPath {
   d: string;
 }
 
+type Side = 'start' | 'end';
+
+/** Which edge of each bar a dependency type connects (spec section 20). */
+export const DEPENDENCY_ANCHORS: Record<GanttDependency['type'], { from: Side; to: Side }> = {
+  FINISH_TO_START: { from: 'end', to: 'start' },
+  START_TO_START: { from: 'start', to: 'start' },
+  FINISH_TO_FINISH: { from: 'end', to: 'end' },
+  START_TO_FINISH: { from: 'start', to: 'end' },
+};
+
 /**
  * The elbow connector between two bars.
  *
- * Finish-to-Start runs from the right edge of the predecessor to the left edge of the
- * successor. When the successor starts before the predecessor finishes — which the
- * application allows, with a warning — the connector routes around rather than doubling
- * back through the bars.
+ * The connector leaves the predecessor from the edge its type names and enters the
+ * successor from the edge its type names — Finish-to-Start runs from the right edge of the
+ * predecessor to the left edge of the successor, Start-to-Start from left edge to left
+ * edge, and so on. When a straight elbow would double back through a bar, the connector
+ * routes through the gap between the rows instead.
  */
 export function dependencyPaths(
   dependencies: readonly GanttDependency[],
@@ -180,6 +191,7 @@ export function dependencyPaths(
 ): DependencyPath[] {
   const barsById = new Map(bars.map((bar) => [bar.id, bar]));
   const paths: DependencyPath[] = [];
+  const gap = 10;
 
   for (const dependency of dependencies) {
     const fromBar = barsById.get(dependency.fromId);
@@ -193,23 +205,64 @@ export function dependencyPaths(
     const finish = barGeometry(toBar, toRow, from, dayWidth);
     if (start == null || finish == null) continue;
 
-    const x1 = start.x + start.width;
+    const anchors = DEPENDENCY_ANCHORS[dependency.type];
+    const x1 = anchors.from === 'end' ? start.x + start.width : start.x;
     const y1 = start.y + BAR_HEIGHT / 2;
-    const x2 = finish.x;
+    const x2 = anchors.to === 'start' ? finish.x : finish.x + finish.width;
     const y2 = finish.y + BAR_HEIGHT / 2;
 
-    const gap = 10;
-    const d =
-      x2 >= x1 + gap * 2
-        ? // Room to run straight across: out, down, in.
-          `M ${x1} ${y1} H ${x1 + gap} V ${y2} H ${x2}`
-        : // The successor starts too early; route below the predecessor and come back.
-          `M ${x1} ${y1} H ${x1 + gap} V ${y1 + ROW_HEIGHT / 2} H ${x2 - gap} V ${y2} H ${x2}`;
+    // Step out of the predecessor, and the point from which to step into the successor.
+    const out = anchors.from === 'end' ? x1 + gap : x1 - gap;
+    const into = anchors.to === 'start' ? x2 - gap : x2 + gap;
+    // A straight elbow works when the vertical run sits on the correct side of both edges.
+    const straight =
+      (anchors.from === 'end' ? into >= out : into <= out) ||
+      (anchors.from === 'end' && anchors.to === 'end') ||
+      (anchors.from === 'start' && anchors.to === 'start');
+
+    const d = straight
+      ? (() => {
+          // Same-side links share one vertical run, placed outside both edges.
+          const run =
+            anchors.from === anchors.to
+              ? anchors.from === 'end'
+                ? Math.max(out, into)
+                : Math.min(out, into)
+              : out;
+          return `M ${x1} ${y1} H ${run} V ${y2} H ${x2}`;
+        })()
+      : `M ${x1} ${y1} H ${out} V ${y1 + ROW_HEIGHT / 2} H ${into} V ${y2} H ${x2}`;
 
     paths.push({ id: dependency.id, d });
   }
 
   return paths;
+}
+
+export type DragMode = 'move' | 'start' | 'end';
+
+/**
+ * New dates for a task bar dragged by `deltaDays`: the whole bar moves, or one edge does.
+ * An edge never crosses the other, so a task always lasts at least its first day.
+ */
+export function draggedDates(
+  start: string,
+  end: string,
+  deltaDays: number,
+  mode: DragMode,
+): { start: string; end: string } {
+  if (mode === 'move') return { start: addDays(start, deltaDays), end: addDays(end, deltaDays) };
+  if (mode === 'end') {
+    const next = addDays(end, deltaDays);
+    return { start, end: next < start ? start : next };
+  }
+  const next = addDays(start, deltaDays);
+  return { start: next > end ? end : next, end };
+}
+
+/** Whole days a horizontal drag of `dx` pixels represents at this zoom. */
+export function dragDays(dx: number, dayWidth: number): number {
+  return Math.round(dx / dayWidth);
 }
 
 /**

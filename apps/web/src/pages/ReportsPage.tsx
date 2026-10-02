@@ -1,13 +1,16 @@
 /**
- * Cross-project reporting (spec sections 48 and 49).
+ * Cross-project reporting (spec sections 48, 49 and 84).
  *
  * Work distribution across people, so an uneven load is visible before it becomes a
- * missed deadline.
+ * missed deadline, and capacity over the coming weeks, so it is visible before the work
+ * is even assigned.
  */
 import { useQuery } from '@tanstack/react-query';
 import type { WorkloadReport } from '@ekavist/shared';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
+import { CapacityCard } from '../components/CapacityCard.js';
+import { ExportButton } from '../components/ExportButton.js';
 import { Avatar, FilterBar, PageHeader } from '../components/ui/page.js';
 import {
   Card,
@@ -23,9 +26,11 @@ import {
 } from '../components/ui/primitives.js';
 import { api } from '../lib/api.js';
 import { formatHours } from '../lib/format.js';
+import { useAuth } from '../features/auth/AuthProvider.js';
 import { keys, useProjects } from '../lib/queries.js';
 
 export function ReportsPage() {
+  const { can } = useAuth();
   const [projectId, setProjectId] = useState('');
   const { data: projects } = useProjects({ page: 1, pageSize: 100 });
 
@@ -70,6 +75,8 @@ export function ReportsPage() {
             </option>
           ))}
         </Select>
+        <span className="flex-1" />
+        <ExportButton path="/reports/workload.csv" query={params} />
       </FilterBar>
 
       <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -150,6 +157,12 @@ export function ReportsPage() {
           </Table>
         )}
       </Card>
+
+      {(can('report:read') || can('attendance:read-team') || can('attendance:read-all')) && (
+        <div className="mt-4">
+          <CapacityCard />
+        </div>
+      )}
 
       <p className="mt-4 text-[12px] text-ink-faint">
         Daily, weekly and project-completion reports are on each project, under{' '}

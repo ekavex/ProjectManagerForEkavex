@@ -25,6 +25,7 @@ export const USER_DETAIL_SELECT = {
   joiningDate: true,
   timezone: true,
   skills: true,
+  totpEnabledAt: true,
   createdAt: true,
   updatedAt: true,
   department: { select: { id: true, name: true } },
@@ -60,6 +61,7 @@ export function toUserDetail(row: UserDetailRow): UserDetail {
     joiningDate: row.joiningDate?.toISOString().slice(0, 10) ?? null,
     timezone: row.timezone,
     skills: row.skills,
+    twoFactorEnabled: row.totpEnabledAt != null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };

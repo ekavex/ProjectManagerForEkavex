@@ -3,7 +3,13 @@
  * a task's counts add up to. Pure functions — every caller (dashboard, report,
  * notification scanner, task list) uses these rather than re-deriving the answer.
  */
-import { TERMINAL_TASK_STATUSES, type TaskCounts, type TaskStatus } from '@ekavist/shared';
+import {
+  TERMINAL_TASK_STATUSES,
+  type DependencyType,
+  type TaskCompletionRules,
+  type TaskCounts,
+  type TaskStatus,
+} from '@ekavist/shared';
 import { daysBetween, type DateOnly } from './time.js';
 
 export interface OverdueInput {
@@ -93,15 +99,100 @@ export function transitionError(from: TaskStatus, to: TaskStatus): string {
   return `A task cannot move from ${from} to ${to}.`;
 }
 
+export interface DependencyLink<T extends { status: TaskStatus }> {
+  type: DependencyType;
+  predecessor: T;
+}
+
+export interface DependencyConflict<T> {
+  predecessor: T;
+  /** What is unmet, phrased to follow the predecessor's reference. */
+  reason: 'has not started yet' | 'has not finished yet';
+}
+
+const finished = (status: TaskStatus): boolean => status === 'COMPLETED' || status === 'CANCELLED';
+const started = (status: TaskStatus): boolean => status !== 'NOT_STARTED';
+
 /**
- * Whether starting this task is discouraged because a Finish-to-Start predecessor has not
- * finished (spec section 20). This is a warning, not a prohibition: the user may override
- * it, and the override is recorded.
+ * The dependencies a status change would break (spec section 20), for all four types:
+ *
+ *   Finish-to-Start   the successor should not start before the predecessor finishes
+ *   Start-to-Start    the successor should not start before the predecessor starts
+ *   Finish-to-Finish  the successor should not finish before the predecessor finishes
+ *   Start-to-Finish   the successor should not finish before the predecessor starts
+ *
+ * Like the original Finish-to-Start rule these are warnings the user may override, and
+ * a cancelled predecessor never blocks anything.
  */
-export function blockingPredecessors<T extends { status: TaskStatus }>(
-  predecessors: readonly T[],
-): T[] {
-  return predecessors.filter((task) => task.status !== 'COMPLETED' && task.status !== 'CANCELLED');
+export function dependencyConflicts<T extends { status: TaskStatus }>(
+  from: TaskStatus,
+  to: TaskStatus,
+  links: readonly DependencyLink<T>[],
+): DependencyConflict<T>[] {
+  const starting =
+    from === 'NOT_STARTED' && (to === 'IN_PROGRESS' || to === 'UNDER_REVIEW' || to === 'COMPLETED');
+  const completing = to === 'COMPLETED' && from !== 'COMPLETED';
+  const conflicts: DependencyConflict<T>[] = [];
+
+  for (const { type, predecessor } of links) {
+    const status = predecessor.status;
+    if (status === 'CANCELLED') continue;
+    if (type === 'FINISH_TO_START' && starting && !finished(status)) {
+      conflicts.push({ predecessor, reason: 'has not finished yet' });
+    } else if (type === 'START_TO_START' && starting && !started(status)) {
+      conflicts.push({ predecessor, reason: 'has not started yet' });
+    } else if (type === 'FINISH_TO_FINISH' && completing && !finished(status)) {
+      conflicts.push({ predecessor, reason: 'has not finished yet' });
+    } else if (type === 'START_TO_FINISH' && completing && !started(status)) {
+      conflicts.push({ predecessor, reason: 'has not started yet' });
+    }
+  }
+  return conflicts;
+}
+
+/**
+ * Whether a dependency is already broken by the tasks' current states, for the project
+ * health indicator: the same four rules as `dependencyConflicts`, judged after the fact.
+ */
+export function isDependencyViolated(
+  type: DependencyType,
+  predecessor: TaskStatus,
+  successor: TaskStatus,
+): boolean {
+  if (predecessor === 'CANCELLED' || successor === 'CANCELLED') return false;
+  const successorStarted = successor !== 'NOT_STARTED';
+  const successorFinished = successor === 'COMPLETED';
+  switch (type) {
+    case 'FINISH_TO_START':
+      return successorStarted && !finished(predecessor);
+    case 'START_TO_START':
+      return successorStarted && !started(predecessor);
+    case 'FINISH_TO_FINISH':
+      return successorFinished && !finished(predecessor);
+    case 'START_TO_FINISH':
+      return successorFinished && !started(predecessor);
+  }
+}
+
+/**
+ * What a task still lacks before it may be completed, under the project's completion
+ * criteria (business rule 7). Empty means it may complete.
+ */
+export function unmetCompletionCriteria(
+  rules: TaskCompletionRules,
+  evidence: { note: string | null | undefined; actualHours: number | null; attachments: number },
+): string[] {
+  const unmet: string[] = [];
+  if (rules.requiresNote && (evidence.note == null || evidence.note.trim() === '')) {
+    unmet.push('a completion note');
+  }
+  if (rules.requiresActualHours && (evidence.actualHours == null || evidence.actualHours <= 0)) {
+    unmet.push('the actual hours spent');
+  }
+  if (rules.requiresAttachment && evidence.attachments === 0) {
+    unmet.push('at least one attachment or linked document');
+  }
+  return unmet;
 }
 
 /** Statuses that mean work has begun, used to set a phase's actual start date. */

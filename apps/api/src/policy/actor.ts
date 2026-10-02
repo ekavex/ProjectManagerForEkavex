@@ -6,8 +6,10 @@
  */
 import {
   ORG_ROLE_PERMISSIONS,
+  PERMISSIONS,
   PROJECT_ROLE_PERMISSIONS,
   VIEWER_OPT_IN_PERMISSIONS,
+  isPermission,
   type OrgRole,
   type Permission,
   type ProjectRole,
@@ -49,6 +51,10 @@ export async function loadOrgPermissions(
   organizationId: string,
   role: OrgRole,
 ): Promise<Set<Permission>> {
+  // Administrators hold everything, including permissions added after their rows were
+  // seeded, and cannot be locked out of the role editor.
+  if (role === 'SUPER_ADMIN') return new Set(PERMISSIONS);
+
   const rows = await db.rolePermission.findMany({
     where: { organizationId, role },
     select: { permission: true },
@@ -56,7 +62,8 @@ export async function loadOrgPermissions(
   if (rows.length === 0) {
     return new Set(ORG_ROLE_PERMISSIONS[role]);
   }
-  return new Set(rows.map((row) => row.permission as Permission));
+  // Rows naming a permission that no longer exists are ignored rather than trusted.
+  return new Set(rows.map((row) => row.permission).filter(isPermission));
 }
 
 /**

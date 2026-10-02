@@ -4,6 +4,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState, type FormEvent } from 'react';
 import { TaskTable } from '../../components/TaskTable.js';
 import { Modal, useToast } from '../../components/ui/overlays.js';
+import { ExportButton } from '../../components/ExportButton.js';
 import { FilterBar, Pagination } from '../../components/ui/page.js';
 import {
   Button,
@@ -17,6 +18,7 @@ import {
 import { ApiError, api } from '../../lib/api.js';
 import { humanise } from '../../lib/format.js';
 import { useMembers, usePhases, useTasks, useWbs } from '../../lib/queries.js';
+import { ImportModal } from './ImportModal.js';
 
 export function TasksTab({ project }: { project: ProjectDetail }) {
   const [page, setPage] = useState(1);
@@ -25,6 +27,7 @@ export function TasksTab({ project }: { project: ProjectDetail }) {
   const [assigneeId, setAssigneeId] = useState('');
   const [overdueOnly, setOverdueOnly] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [importing, setImporting] = useState(false);
 
   const { data: members } = useMembers(project.id);
   const { data, isLoading, isError, error, refetch } = useTasks(project.id, {
@@ -97,6 +100,14 @@ export function TasksTab({ project }: { project: ProjectDetail }) {
         </label>
 
         <span className="flex-1" />
+        {project.capabilities.includes('report:export') && (
+          <ExportButton path={`/projects/${project.id}/export/tasks`} />
+        )}
+        {project.capabilities.includes('import:run') && (
+          <Button size="sm" variant="ghost" onClick={() => setImporting(true)}>
+            Import from Excel
+          </Button>
+        )}
         {canCreate && (
           <Button variant="primary" size="sm" onClick={() => setCreating(true)}>
             New task
@@ -126,6 +137,9 @@ export function TasksTab({ project }: { project: ProjectDetail }) {
       </div>
 
       <TaskModal project={project} open={creating} onClose={() => setCreating(false)} />
+      {importing && (
+        <ImportModal project={project} open={importing} onClose={() => setImporting(false)} />
+      )}
     </>
   );
 }

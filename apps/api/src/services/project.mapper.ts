@@ -2,6 +2,7 @@
 import type { ProjectDetail, ProjectSummary, TaskCounts } from '@ekavist/shared';
 import type { Prisma } from '@prisma/client';
 
+import { allowedProjectTransitions } from '../domain/project-status.js';
 import { dateColumnToDateOnly, type DateOnly } from '../domain/time.js';
 import { USER_SUMMARY_SELECT, toUserSummaryOrNull } from './user.mapper.js';
 
@@ -38,6 +39,11 @@ export const PROJECT_DETAIL_SELECT = {
   objectives: true,
   deliverables: true,
   archivedAt: true,
+  closedAt: true,
+  handoverNote: true,
+  completionRequiresNote: true,
+  completionRequiresActualHours: true,
+  completionRequiresAttachment: true,
   createdAt: true,
   department: { select: { id: true, name: true } },
   createdBy: { select: USER_SUMMARY_SELECT },
@@ -90,6 +96,14 @@ export function toProjectDetail(
     createdBy: toUserSummaryOrNull(row.createdBy),
     createdAt: row.createdAt.toISOString(),
     archivedAt: row.archivedAt?.toISOString() ?? null,
+    closedAt: row.closedAt?.toISOString() ?? null,
+    handoverNote: row.handoverNote,
+    allowedStatuses: [...allowedProjectTransitions(row.status)],
+    completionRules: {
+      requiresNote: row.completionRequiresNote,
+      requiresActualHours: row.completionRequiresActualHours,
+      requiresAttachment: row.completionRequiresAttachment,
+    },
     capabilities: extras.capabilities,
   };
 }

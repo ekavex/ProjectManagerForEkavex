@@ -41,6 +41,9 @@ export const updateUserSchema = createUserSchema
   .partial()
   .extend({
     status: z.enum(USER_STATUSES).optional(),
+    /** Null clears the department or manager. */
+    departmentId: idSchema.nullable().optional(),
+    managerId: idSchema.nullable().optional(),
   });
 export type UpdateUserInput = z.infer<typeof updateUserSchema>;
 

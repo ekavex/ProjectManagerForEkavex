@@ -288,6 +288,7 @@ export async function parseUpload(
     checksum,
     sheets: sheetNames,
     detectedColumns: headers.map((header) => header.label),
+    mapping: resolvedMapping,
     rows: previewRows,
     issues,
     summary,

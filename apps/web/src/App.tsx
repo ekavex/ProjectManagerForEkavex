@@ -27,6 +27,18 @@ const NotificationRulesPage = lazy(() =>
     default: m.NotificationRulesPage,
   })),
 );
+const OrganizationPage = lazy(() =>
+  import('./pages/admin/OrganizationPage.js').then((m) => ({ default: m.OrganizationPage })),
+);
+const RolesPage = lazy(() =>
+  import('./pages/admin/RolesPage.js').then((m) => ({ default: m.RolesPage })),
+);
+const CalendarPage = lazy(() =>
+  import('./pages/CalendarPage.js').then((m) => ({ default: m.CalendarPage })),
+);
+const LeavePage = lazy(() =>
+  import('./pages/LeavePage.js').then((m) => ({ default: m.LeavePage })),
+);
 const PeoplePage = lazy(() =>
   import('./pages/admin/PeoplePage.js').then((m) => ({ default: m.PeoplePage })),
 );
@@ -104,10 +116,14 @@ export function App() {
                     <Route path="/team" element={<TeamPage />} />
                     <Route path="/team/:userId" element={<TeamPage />} />
                     <Route path="/attendance" element={<AttendancePage />} />
+                    <Route path="/leave" element={<LeavePage />} />
+                    <Route path="/calendar" element={<CalendarPage />} />
                     <Route path="/reports" element={<ReportsPage />} />
                     <Route path="/notifications" element={<NotificationsPage />} />
                     <Route path="/settings" element={<SettingsPage />} />
                     <Route path="/admin/users" element={<PeoplePage />} />
+                    <Route path="/admin/organization" element={<OrganizationPage />} />
+                    <Route path="/admin/roles" element={<RolesPage />} />
                     <Route path="/admin/notifications" element={<NotificationRulesPage />} />
                     <Route path="/admin/audit" element={<AuditPage />} />
                     <Route path="*" element={<NotFoundPage />} />

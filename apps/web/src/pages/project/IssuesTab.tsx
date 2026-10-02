@@ -3,6 +3,7 @@
  *
  * An issue is a problem that has already happened, which is what separates it from a risk.
  */
+import { ExportButton } from '../../components/ExportButton.js';
 import type { CreateIssueInput, IssueStatus, Priority, ProjectDetail } from '@ekavist/shared';
 import { ISSUE_STATUSES, PRIORITIES } from '@ekavist/shared';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -71,6 +72,9 @@ export function IssuesTab({ project }: { project: ProjectDetail }) {
           ))}
         </Select>
         <span className="flex-1" />
+        {project.capabilities.includes('report:export') && (
+          <ExportButton path={`/projects/${project.id}/export/issues`} />
+        )}
         {canManage && (
           <Button size="sm" variant="primary" onClick={() => setAdding(true)}>
             Raise an issue

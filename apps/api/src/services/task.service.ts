@@ -20,6 +20,7 @@ import {
   type TaskComment,
   type TaskDetail,
   type TaskLink,
+  type TaskStatus,
   type TaskSummary,
   type UpdateTaskInput,
   type UpdateTaskProgressInput,
@@ -29,7 +30,8 @@ import type { Prisma } from '@prisma/client';
 import type { Db, RootDb } from '../db/prisma.js';
 import { progressForStatus, statusForProgress } from '../domain/progress.js';
 import {
-  blockingPredecessors,
+  dependencyConflicts,
+  unmetCompletionCriteria,
   canTransition,
   daysUntilDue,
   isOverdue,
@@ -195,6 +197,8 @@ function toTaskDetail(row: DetailRow, todayDate: DateOnly): TaskDetail {
 
 // ---------------------------------------------------------------------- list
 
+const NULLABLE_TASK_SORTS: ReadonlySet<string> = new Set(['dueDate', 'startDate']);
+
 export async function listTasks(
   db: Db,
   actor: Actor,
@@ -242,8 +246,14 @@ export async function listTasks(
     db.task.findMany({
       where,
       select: TASK_SUMMARY_SELECT,
-      // Tasks with no due date sort last rather than first.
-      orderBy: [{ [query.sort]: { sort: query.direction, nulls: 'last' } }],
+      // Tasks with no date sort last rather than first. Prisma accepts `nulls` only on
+      // nullable columns, so the other sort keys take a plain direction.
+      orderBy: [
+        NULLABLE_TASK_SORTS.has(query.sort)
+          ? { [query.sort]: { sort: query.direction, nulls: 'last' } }
+          : { [query.sort]: query.direction },
+        { reference: 'asc' },
+      ],
       ...paginate(query),
     }),
   ]);
@@ -530,30 +540,15 @@ export async function updateTaskStatus(
     );
   }
 
-  // Finish-to-Start: starting a task whose predecessor is unfinished is a warning the
-  // user may accept, and the acceptance is recorded (spec section 20).
-  let overrodeWarning = false;
-  if (input.status === 'IN_PROGRESS' && task.status === 'NOT_STARTED') {
-    const blocking = blockingPredecessors(
-      task.predecessors.map((dependency) => dependency.predecessor),
-    );
-    if (blocking.length > 0) {
-      if (!input.overridePredecessorWarning) {
-        throw new AppError(
-          ERROR_CODES.TASK_PREDECESSOR_INCOMPLETE,
-          `${blocking.map((item) => item.reference).join(', ')} ${
-            blocking.length === 1 ? 'has' : 'have'
-          } not finished yet. Start this task anyway only if you are sure.`,
-          {
-            details: blocking.map((item) => ({
-              path: item.reference,
-              message: `${item.name} is ${item.status.toLowerCase().replace(/_/g, ' ')}.`,
-            })),
-          },
-        );
-      }
-      overrodeWarning = true;
-    }
+  // Unmet dependencies are a warning the user may accept, and the acceptance is recorded
+  // (spec section 20).
+  const overrodeWarning = assertDependenciesOrOverride(
+    task,
+    input.status,
+    input.overridePredecessorWarning,
+  );
+  if (input.status === 'COMPLETED' && task.status !== 'COMPLETED') {
+    assertCompletionCriteria(task, { note: input.note, actualHours: input.actualHours });
   }
 
   const progress = progressForStatus(input.status, task.progress);
@@ -564,6 +559,7 @@ export async function updateTaskStatus(
       data: {
         status: input.status,
         ...(progress != null ? { progress } : {}),
+        ...(input.actualHours != null ? { actualHours: input.actualHours } : {}),
         completedAt: input.status === 'COMPLETED' ? new Date() : null,
       },
     });
@@ -618,6 +614,13 @@ export async function updateTaskProgress(
 
   const task = await loadTaskForOwnUpdate(db, actor, context, taskId);
   const status = statusForProgress(input.progress, task.status);
+  const overrodeWarning =
+    status == null
+      ? false
+      : assertDependenciesOrOverride(task, status, input.overridePredecessorWarning);
+  if (status === 'COMPLETED') {
+    assertCompletionCriteria(task, { note: input.note, actualHours: input.actualHours });
+  }
 
   await db.$transaction(async (tx) => {
     await tx.task.update({
@@ -643,6 +646,7 @@ export async function updateTaskProgress(
           progress: input.progress,
           status: status ?? task.status,
           note: input.note ?? null,
+          ...(overrodeWarning ? { overrodePredecessorWarning: true } : {}),
         },
       },
       {
@@ -840,13 +844,23 @@ async function loadTaskForOwnUpdate(db: Db, actor: Actor, context: ProjectContex
       status: true,
       progress: true,
       phaseId: true,
+      actualHours: true,
       assignments: { select: { userId: true } },
       predecessors: {
-        where: { type: 'FINISH_TO_START' },
+        where: { predecessor: { deletedAt: null } },
         select: {
+          type: true,
           predecessor: { select: { id: true, reference: true, name: true, status: true } },
         },
       },
+      project: {
+        select: {
+          completionRequiresNote: true,
+          completionRequiresActualHours: true,
+          completionRequiresAttachment: true,
+        },
+      },
+      _count: { select: { attachments: true, documents: { where: { deletedAt: null } } } },
     },
   });
   if (task == null) throw notFound('That task');
@@ -863,6 +877,69 @@ async function loadTaskForOwnUpdate(db: Db, actor: Actor, context: ProjectContex
     );
   }
   return task;
+}
+
+type LoadedTask = Awaited<ReturnType<typeof loadTaskForOwnUpdate>>;
+
+/**
+ * Refuses a change that breaks a dependency unless the user has confirmed it. Returns
+ * whether a warning was overridden, so the audit entry can say so.
+ */
+function assertDependenciesOrOverride(
+  task: LoadedTask,
+  to: TaskStatus,
+  override: boolean,
+): boolean {
+  const conflicts = dependencyConflicts(
+    task.status,
+    to,
+    task.predecessors.map((link) => ({ type: link.type, predecessor: link.predecessor })),
+  );
+  if (conflicts.length === 0) return false;
+  if (override) return true;
+
+  const action = to === 'COMPLETED' && task.status !== 'NOT_STARTED' ? 'Finish' : 'Start';
+  throw new AppError(
+    ERROR_CODES.TASK_PREDECESSOR_INCOMPLETE,
+    `${conflicts
+      .map((conflict) => `${conflict.predecessor.reference} ${conflict.reason}`)
+      .join('; ')}. ${action} this task anyway only if you are sure.`,
+    {
+      details: conflicts.map((conflict) => ({
+        path: conflict.predecessor.reference,
+        message: `${conflict.predecessor.name} is ${conflict.predecessor.status
+          .toLowerCase()
+          .replace(/_/g, ' ')}.`,
+      })),
+    },
+  );
+}
+
+/** Applies the project's completion criteria (business rule 7). */
+function assertCompletionCriteria(
+  task: LoadedTask,
+  supplied: { note: string | undefined; actualHours: number | undefined },
+): void {
+  const unmet = unmetCompletionCriteria(
+    {
+      requiresNote: task.project.completionRequiresNote,
+      requiresActualHours: task.project.completionRequiresActualHours,
+      requiresAttachment: task.project.completionRequiresAttachment,
+    },
+    {
+      note: supplied.note,
+      actualHours:
+        supplied.actualHours ?? (task.actualHours == null ? null : Number(task.actualHours)),
+      attachments: task._count.attachments + task._count.documents,
+    },
+  );
+  if (unmet.length > 0) {
+    throw new AppError(
+      ERROR_CODES.TASK_COMPLETION_CRITERIA_UNMET,
+      `This project asks for ${unmet.join(', ')} before a task can be completed.`,
+      { details: unmet.map((item) => ({ path: 'completion', message: item })) },
+    );
+  }
 }
 
 /** A phase and a WBS item must agree: the WBS item wins, because it is the finer choice. */

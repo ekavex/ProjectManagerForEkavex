@@ -12,6 +12,7 @@ export * from './schemas/chat.js';
 export * from './schemas/content.js';
 export * from './schemas/governance.js';
 export * from './schemas/ops.js';
+export * from './schemas/admin.js';
 
 export * from './types/core.js';
 export * from './types/analytics.js';

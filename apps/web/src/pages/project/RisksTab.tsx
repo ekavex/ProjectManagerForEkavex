@@ -5,6 +5,7 @@
  * on the server. The form therefore shows what the severity *will* be as the two inputs
  * change, so the person entering it understands the matrix rather than arguing with it.
  */
+import { ExportButton } from '../../components/ExportButton.js';
 import type { CreateRiskInput, ProjectDetail, RiskLevel, RiskStatus } from '@ekavist/shared';
 import { RISK_LEVELS, RISK_STATUSES } from '@ekavist/shared';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -90,6 +91,9 @@ export function RisksTab({ project }: { project: ProjectDetail }) {
           ))}
         </Select>
         <span className="flex-1" />
+        {project.capabilities.includes('report:export') && (
+          <ExportButton path={`/projects/${project.id}/export/risks`} />
+        )}
         {canManage && (
           <Button size="sm" variant="primary" onClick={() => setAdding(true)}>
             Add risk

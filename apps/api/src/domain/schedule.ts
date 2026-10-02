@@ -141,7 +141,7 @@ export function projectHealth(input: HealthInput): ProjectHealth {
     detail:
       input.violatedDependencies === 0
         ? 'Every running task has its predecessors finished.'
-        : `${input.violatedDependencies} task${input.violatedDependencies === 1 ? '' : 's'} started before a predecessor finished.`,
+        : `${input.violatedDependencies} dependenc${input.violatedDependencies === 1 ? 'y is' : 'ies are'} out of order.`,
   });
 
   // --- phase gates -------------------------------------------------------

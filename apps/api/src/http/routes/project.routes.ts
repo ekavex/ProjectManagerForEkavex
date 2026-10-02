@@ -2,6 +2,7 @@ import {
   addProjectMemberSchema,
   changeProjectStatusSchema,
   closeProjectSchema,
+  createLessonSchema,
   createProjectSchema,
   listProjectsQuerySchema,
   updateProjectMemberSchema,
@@ -9,6 +10,7 @@ import {
   type AddProjectMemberInput,
   type ChangeProjectStatusInput,
   type CloseProjectInput,
+  type CreateLessonInput,
   type CreateProjectInput,
   type ListProjectsQuery,
   type UpdateProjectInput,
@@ -221,6 +223,51 @@ projectRouter.post(
         body<CloseProjectInput>(req),
       ),
     );
+  }),
+);
+
+// ------------------------------------------------------------------ lessons
+
+projectRouter.get(
+  '/:projectId/lessons',
+  requireProjectPermission('project:read'),
+  handler(async (req, res) => {
+    const lessons = await projectService.listLessons(prisma, requireProjectContext(req).projectId);
+    res.json({ data: lessons });
+  }),
+);
+
+projectRouter.post(
+  '/:projectId/lessons',
+  requireProjectPermission('project:close'),
+  validate({ body: createLessonSchema }),
+  handler(async (req, res) => {
+    const actor = requireActor(req);
+    res
+      .status(201)
+      .json(
+        await projectService.addLesson(
+          prisma,
+          actor,
+          requireProjectContext(req),
+          body<CreateLessonInput>(req),
+        ),
+      );
+  }),
+);
+
+projectRouter.delete(
+  '/:projectId/lessons/:lessonId',
+  requireProjectPermission('project:close'),
+  handler(async (req, res) => {
+    const actor = requireActor(req);
+    await projectService.deleteLesson(
+      prisma,
+      actor,
+      requireProjectContext(req),
+      req.params.lessonId as string,
+    );
+    res.status(204).send();
   }),
 );
 

@@ -15,6 +15,8 @@ import type {
   DocumentCategory,
   HealthLevel,
   IssueStatus,
+  LeaveStatus,
+  LeaveType,
   MilestoneStatus,
   NoteVisibility,
   NotificationType,
@@ -53,6 +55,7 @@ export interface UserDetail extends UserSummary {
   joiningDate: string | null;
   timezone: string;
   skills: string[];
+  twoFactorEnabled: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -122,8 +125,28 @@ export interface ProjectDetail extends ProjectSummary {
   createdBy: UserSummary | null;
   createdAt: string;
   archivedAt: string | null;
+  closedAt: string | null;
+  handoverNote: string | null;
+  /** The statuses the status route accepts from here; completion goes through closure. */
+  allowedStatuses: ProjectStatus[];
+  /** What a task must carry before it can be completed (business rule 7). */
+  completionRules: TaskCompletionRules;
   /** What the calling user may do here, so the UI need not re-derive the rules. */
   capabilities: Permission[];
+}
+
+export interface TaskCompletionRules {
+  requiresNote: boolean;
+  requiresActualHours: boolean;
+  requiresAttachment: boolean;
+}
+
+export interface ProjectLesson {
+  id: string;
+  category: string;
+  note: string;
+  author: UserSummary | null;
+  createdAt: string;
 }
 
 export interface TaskCounts {
@@ -594,4 +617,83 @@ export interface SearchHit {
   subtitle: string | null;
   projectId: string | null;
   link: string;
+}
+
+// ------------------------------------------------------------ organisation
+
+export interface Holiday {
+  id: string;
+  date: string;
+  name: string;
+}
+
+export interface OrganizationSettings {
+  name: string;
+  timezone: string;
+  workdayStart: string;
+  lateAfter: string;
+  halfDayMinutes: number;
+  fullDayMinutes: number;
+  annualLeaveDays: number;
+  sickLeaveDays: number;
+  casualLeaveDays: number;
+}
+
+export interface RolePermissionRow {
+  role: OrgRole;
+  permissions: Permission[];
+  /** Administrators always hold every permission, so their row cannot be edited. */
+  editable: boolean;
+}
+
+// -------------------------------------------------------------------- leave
+
+export interface LeaveRequest {
+  id: string;
+  user: UserSummary;
+  type: LeaveType;
+  startDate: string;
+  endDate: string;
+  days: number;
+  halfDay: boolean;
+  reason: string | null;
+  status: LeaveStatus;
+  approver: UserSummary | null;
+  decidedAt: string | null;
+  decisionNote: string | null;
+  createdAt: string;
+  /** Open tasks of the requester due inside the leave, so the impact is visible. */
+  affectedTasks: {
+    id: string;
+    projectId: string;
+    reference: string;
+    name: string;
+    dueDate: string;
+  }[];
+  /** Whether the caller may approve or reject it. */
+  canDecide: boolean;
+}
+
+export interface LeaveBalance {
+  year: number;
+  rows: {
+    type: LeaveType;
+    allowance: number | null;
+    used: number;
+    pending: number;
+    remaining: number | null;
+  }[];
+}
+
+// ---------------------------------------------------------------- security
+
+export interface TwoFactorStatus {
+  enabled: boolean;
+  enabledAt: string | null;
+  recoveryCodesRemaining: number;
+}
+
+export interface TwoFactorEnrolment {
+  secret: string;
+  otpauthUrl: string;
 }

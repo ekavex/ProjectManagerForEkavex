@@ -27,7 +27,8 @@ interface AuthState {
   user: CurrentUser | null;
   /** True until the initial "am I signed in?" check has finished. */
   initialising: boolean;
-  signIn: (email: string, password: string) => Promise<void>;
+  /** `code` is the authenticator or recovery code, once two-factor is on. */
+  signIn: (email: string, password: string, code?: string) => Promise<void>;
   signOut: () => Promise<void>;
   refreshUser: (user: CurrentUser) => void;
   can: (permission: Permission) => boolean;
@@ -58,8 +59,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUnauthenticatedHandler(() => setUser(null));
   }, []);
 
-  const signIn = useCallback(async (email: string, password: string) => {
-    const session = await apiLogin(email, password);
+  const signIn = useCallback(async (email: string, password: string, code?: string) => {
+    const session = await apiLogin(email, password, code);
     setUser(session.user);
   }, []);
 

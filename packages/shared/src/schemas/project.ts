@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { PRIORITIES, PROJECT_ROLES, PROJECT_STATUSES } from '../enums.js';
+import { LESSON_CATEGORIES, PRIORITIES, PROJECT_ROLES, PROJECT_STATUSES } from '../enums.js';
 import {
   dateOnlySchema,
   idSchema,
@@ -44,6 +44,12 @@ export const createProjectSchema = z
     deliverables: z.array(shortText(500)).max(100).default([]),
     /** Create the eight default Waterfall phases along with the project. */
     useDefaultPhases: z.boolean().default(true),
+    /**
+     * Copy the phases, WBS, tasks, dependencies and milestones of an existing project,
+     * shifted to the new start date (spec section 10, project template). Overrides
+     * `useDefaultPhases`.
+     */
+    templateProjectId: idSchema.optional(),
   })
   .refine((value) => value.plannedEndDate >= value.startDate, {
     path: ['plannedEndDate'],
@@ -69,6 +75,10 @@ export const updateProjectSchema = z
     logoUrl: urlSchema.nullable().optional(),
     objectives: z.array(shortText(500)).max(50).optional(),
     deliverables: z.array(shortText(500)).max(100).optional(),
+    handoverNote: longText(20000).nullable(),
+    completionRequiresNote: z.boolean().optional(),
+    completionRequiresActualHours: z.boolean().optional(),
+    completionRequiresAttachment: z.boolean().optional(),
   })
   .refine(
     (value) =>
@@ -120,15 +130,7 @@ export const closeProjectSchema = z.object({
   lessons: z
     .array(
       z.object({
-        category: z.enum([
-          'WHAT_WENT_WELL',
-          'WHAT_WENT_WRONG',
-          'CHANGE',
-          'REPEAT',
-          'TECHNICAL',
-          'PROCESS',
-          'TEAM',
-        ]),
+        category: z.enum(LESSON_CATEGORIES),
         note: shortText(2000),
       }),
     )
@@ -138,3 +140,9 @@ export const closeProjectSchema = z.object({
   acknowledgeOpenItems: z.boolean().default(false),
 });
 export type CloseProjectInput = z.infer<typeof closeProjectSchema>;
+
+export const createLessonSchema = z.object({
+  category: z.enum(LESSON_CATEGORIES),
+  note: shortText(2000),
+});
+export type CreateLessonInput = z.infer<typeof createLessonSchema>;

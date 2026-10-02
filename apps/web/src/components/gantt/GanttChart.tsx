@@ -4,10 +4,15 @@
  * A fixed table of rows on the left, a scrolling timeline on the right, and an SVG layer
  * carrying the dependency arrows. Everything is drawn from live project data: phases as
  * bands, WBS items spanning their children, tasks as bars, milestones as diamonds.
+ *
+ * Someone who may edit tasks can reschedule them here: drag a bar to move it, drag either
+ * end to change that date, or focus a bar and use the arrow keys (Shift to change only the
+ * end date). The new dates are saved as an ordinary task update, so the server's rules
+ * and the audit trail apply exactly as they do on the task form.
  */
 import type { GanttResponse, TaskStatus } from '@ekavist/shared';
 import { cn } from '../../lib/cn.js';
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { formatDateShort } from '../../lib/format.js';
 import { Badge } from '../ui/primitives.js';
@@ -17,28 +22,92 @@ import {
   ROW_HEIGHT,
   barGeometry,
   dependencyPaths,
+  dragDays,
+  draggedDates,
   timelineColumns,
   visibleRows,
   xFor,
+  type DragMode,
   type Granularity,
 } from './geometry.js';
+
+interface DragState {
+  id: string;
+  mode: DragMode;
+  originX: number;
+  deltaDays: number;
+}
 
 export function GanttChart({
   data,
   projectId,
   granularity,
   onGranularityChange,
+  onReschedule,
 }: {
   data: GanttResponse;
   projectId: string;
   granularity: Granularity;
   onGranularityChange: (value: Granularity) => void;
+  /** Present only when the viewer may change task dates. */
+  onReschedule?: (taskId: string, dates: { start: string; end: string }) => void;
 }) {
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+  const [drag, setDrag] = useState<DragState | null>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
 
   const dayWidth = DAY_WIDTH[granularity];
-  const rows = useMemo(() => visibleRows(data.bars, collapsed), [data.bars, collapsed]);
+  const visible = useMemo(() => visibleRows(data.bars, collapsed), [data.bars, collapsed]);
+  // While a bar is being dragged it is drawn, and its arrows routed, at the new dates.
+  const rows = useMemo(
+    () =>
+      drag == null || drag.deltaDays === 0
+        ? visible
+        : visible.map((bar) =>
+            bar.id === drag.id && bar.start != null && bar.end != null
+              ? { ...bar, ...draggedDates(bar.start, bar.end, drag.deltaDays, drag.mode) }
+              : bar,
+          ),
+    [visible, drag],
+  );
+
+  const beginDrag = (event: PointerEvent<HTMLDivElement>, id: string): void => {
+    if (onReschedule == null || event.button !== 0) return;
+    const handle = (event.target as HTMLElement).dataset['handle'];
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setDrag({
+      id,
+      mode: handle === 'start' || handle === 'end' ? handle : 'move',
+      originX: event.clientX,
+      deltaDays: 0,
+    });
+  };
+
+  const moveDrag = (event: PointerEvent<HTMLDivElement>): void => {
+    if (drag == null) return;
+    const deltaDays = dragDays(event.clientX - drag.originX, dayWidth);
+    if (deltaDays !== drag.deltaDays) setDrag({ ...drag, deltaDays });
+  };
+
+  const endDrag = (): void => {
+    if (drag == null) return;
+    const original = visible.find((bar) => bar.id === drag.id);
+    if (drag.deltaDays !== 0 && original?.start != null && original.end != null) {
+      onReschedule?.(
+        drag.id,
+        draggedDates(original.start, original.end, drag.deltaDays, drag.mode),
+      );
+    }
+    setDrag(null);
+  };
+
+  const nudge = (event: KeyboardEvent<HTMLDivElement>, start: string, end: string, id: string) => {
+    if (onReschedule == null) return;
+    const step = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0;
+    if (step === 0) return;
+    event.preventDefault();
+    onReschedule(id, draggedDates(start, end, step, event.shiftKey ? 'end' : 'move'));
+  };
   const columns = useMemo(
     () => timelineColumns(data.from, data.to, granularity),
     [data.from, data.to, granularity],
@@ -265,13 +334,56 @@ export function GanttChart({
                   );
                 }
 
+                const draggable = bar.kind === 'TASK' && onReschedule != null;
+                const dragging = drag?.id === bar.id;
+
                 return (
                   <div
                     key={bar.id}
-                    className="absolute z-10"
+                    className={cn(
+                      'group absolute z-10',
+                      draggable &&
+                        'cursor-grab touch-none rounded focus-visible:outline-2 focus-visible:outline-accent',
+                      dragging && 'z-20 cursor-grabbing opacity-90 shadow-md',
+                    )}
                     style={{ left: geometry.x, top: geometry.y, width: geometry.width }}
                     title={`${bar.label} · ${formatDateShort(bar.start)} → ${formatDateShort(bar.end)} · ${bar.progress}%`}
+                    {...(draggable
+                      ? {
+                          tabIndex: 0,
+                          role: 'button',
+                          'aria-label': `${bar.label}, ${formatDateShort(bar.start)} to ${formatDateShort(
+                            bar.end,
+                          )}. Arrow keys move it a day; Shift and arrow keys change the end date.`,
+                          onPointerDown: (event: PointerEvent<HTMLDivElement>) =>
+                            beginDrag(event, bar.id),
+                          onPointerMove: moveDrag,
+                          onPointerUp: endDrag,
+                          onPointerCancel: () => setDrag(null),
+                          onKeyDown: (event: KeyboardEvent<HTMLDivElement>) =>
+                            nudge(event, bar.start as string, bar.end as string, bar.id),
+                        }
+                      : {})}
                   >
+                    {draggable && (
+                      <>
+                        <span
+                          data-handle="start"
+                          className="absolute inset-y-0 -left-1 z-10 w-2 cursor-ew-resize"
+                          aria-hidden="true"
+                        />
+                        <span
+                          data-handle="end"
+                          className="absolute inset-y-0 -right-1 z-10 w-2 cursor-ew-resize"
+                          aria-hidden="true"
+                        />
+                      </>
+                    )}
+                    {dragging && drag.deltaDays !== 0 && (
+                      <span className="pointer-events-none absolute -top-5 left-0 rounded bg-ink px-1.5 py-0.5 text-[10px] whitespace-nowrap text-white">
+                        {formatDateShort(bar.start)} → {formatDateShort(bar.end)}
+                      </span>
+                    )}
                     <div
                       className={cn(
                         'relative overflow-hidden rounded',
@@ -315,6 +427,7 @@ export function GanttChart({
         <span className="flex items-center gap-1.5">
           <span className="h-3 w-px bg-danger" /> Today
         </span>
+        {onReschedule != null && <span>Drag a task, or either end of it, to reschedule.</span>}
         {data.bars.some((bar) => bar.start == null) && (
           <Badge tone="neutral">
             {data.bars.filter((bar) => bar.start == null).length} item(s) have no dates and are not

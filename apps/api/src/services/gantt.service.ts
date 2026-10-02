@@ -137,8 +137,9 @@ export async function getGantt(
     let end = dateColumnToDateOnly(item?.plannedEnd ?? null);
 
     for (const task of tasksByWbs.get(itemId) ?? []) {
-      start = minDate(start, dateColumnToDateOnly(task.startDate));
-      end = maxDate(end, dateColumnToDateOnly(task.dueDate));
+      const span = taskSpan(task);
+      start = minDate(start, span.start);
+      end = maxDate(end, span.end);
     }
     for (const child of wbsChildren.get(itemId) ?? []) {
       const childSpan = computeWbsSpan(child.id, seen);
@@ -159,8 +160,7 @@ export async function getGantt(
   const addTaskBars = (parentId: string, items: typeof tasks, depth: number): void => {
     const ordered = [...items].sort(byDateThenReference);
     for (const task of ordered) {
-      const start = dateColumnToDateOnly(task.startDate);
-      const end = dateColumnToDateOnly(task.dueDate);
+      const { start, end } = taskSpan(task);
       bars.push({
         id: task.id,
         kind: 'TASK',
@@ -173,7 +173,10 @@ export async function getGantt(
         durationDays: start != null && end != null ? daysBetween(start, end) + 1 : null,
         progress: task.status === 'COMPLETED' ? 100 : task.progress,
         status: task.status,
-        isOverdue: isOverdue({ status: task.status, dueDate: end }, todayDate),
+        isOverdue: isOverdue(
+          { status: task.status, dueDate: dateColumnToDateOnly(task.dueDate) },
+          todayDate,
+        ),
         depth,
         hasChildren: false,
       });
@@ -222,8 +225,9 @@ export async function getGantt(
       end = maxDate(end, span.end);
     }
     for (const task of direct) {
-      start = minDate(start, dateColumnToDateOnly(task.startDate));
-      end = maxDate(end, dateColumnToDateOnly(task.dueDate));
+      const span = taskSpan(task);
+      start = minDate(start, span.start);
+      end = maxDate(end, span.end);
     }
 
     bars.push({
@@ -346,4 +350,18 @@ function push<T>(map: Map<string, T[]>, key: string, value: T): void {
   const existing = map.get(key);
   if (existing) existing.push(value);
   else map.set(key, [value]);
+}
+
+/**
+ * The dates a task is drawn across. A task with only a due date is drawn as a one-day bar
+ * on that date, and one with only a start date as a one-day bar on its start: most tasks
+ * carry just a deadline, and leaving them off the chart would hide most of the plan.
+ */
+function taskSpan(task: { startDate: Date | null; dueDate: Date | null }): {
+  start: DateOnly | null;
+  end: DateOnly | null;
+} {
+  const start = dateColumnToDateOnly(task.startDate);
+  const end = dateColumnToDateOnly(task.dueDate);
+  return { start: start ?? end, end: end ?? start };
 }

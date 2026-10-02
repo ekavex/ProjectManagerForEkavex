@@ -5,6 +5,7 @@
  * cannot be approved before its impact has been recorded, and approving it does not touch
  * the plan unless the approver explicitly asks for the schedule shift to be applied.
  */
+import { ExportButton } from '../../components/ExportButton.js';
 import type {
   AnalyseChangeRequestInput,
   ChangeRequest,
@@ -62,11 +63,16 @@ export function ChangeRequestsTab({ project }: { project: ProjectDetail }) {
           Scope changes go through this register so the plan never moves without a decision behind
           it. Record the impact first, then approve or reject.
         </p>
-        {canRaise && (
-          <Button size="sm" variant="primary" onClick={() => setCreating(true)}>
-            Raise a change
-          </Button>
-        )}
+        <div className="flex shrink-0 gap-2">
+          {project.capabilities.includes('report:export') && (
+            <ExportButton path={`/projects/${project.id}/export/change-requests`} />
+          )}
+          {canRaise && (
+            <Button size="sm" variant="primary" onClick={() => setCreating(true)}>
+              Raise a change
+            </Button>
+          )}
+        </div>
       </div>
 
       {isLoading ? (

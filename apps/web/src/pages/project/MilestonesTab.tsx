@@ -5,6 +5,7 @@
  * progress of its own. Linking tasks to it is what makes it meaningful — the Gantt draws
  * it as a diamond and the dashboards list the ones coming up.
  */
+import { ExportButton } from '../../components/ExportButton.js';
 import type {
   CreateMilestoneInput,
   Milestone,
@@ -89,11 +90,16 @@ export function MilestonesTab({ project }: { project: ProjectDetail }) {
           The dates that matter: approvals, deliveries, go-live. They appear as diamonds on the
           Gantt and in the upcoming list on the dashboards.
         </p>
-        {canManage && (
-          <Button size="sm" variant="primary" onClick={() => setAdding(true)}>
-            Add milestone
-          </Button>
-        )}
+        <div className="flex shrink-0 gap-2">
+          {project.capabilities.includes('report:export') && (
+            <ExportButton path={`/projects/${project.id}/export/milestones`} />
+          )}
+          {canManage && (
+            <Button size="sm" variant="primary" onClick={() => setAdding(true)}>
+              Add milestone
+            </Button>
+          )}
+        </div>
       </div>
 
       <Card bodyClassName="p-0">

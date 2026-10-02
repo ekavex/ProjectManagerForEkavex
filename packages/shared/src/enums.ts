@@ -91,9 +91,6 @@ export const DEPENDENCY_TYPES = [
 ] as const;
 export type DependencyType = (typeof DEPENDENCY_TYPES)[number];
 
-/** Only Finish-to-Start is enforced in v1 (spec section 20). */
-export const SUPPORTED_DEPENDENCY_TYPES: readonly DependencyType[] = ['FINISH_TO_START'];
-
 export const MILESTONE_STATUSES = [
   'PLANNED',
   'AT_RISK',
@@ -182,6 +179,8 @@ export const NOTIFICATION_TYPES = [
   'LEAD_OVERDUE_DIGEST',
   'DAILY_SUMMARY',
   'WEEKLY_SUMMARY',
+  'LEAVE_REQUESTED',
+  'LEAVE_DECIDED',
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 
@@ -193,6 +192,26 @@ export type EmailStatus = (typeof EMAIL_STATUSES)[number];
 
 export const HEALTH_LEVELS = ['OK', 'ATTENTION', 'CRITICAL'] as const;
 export type HealthLevel = (typeof HEALTH_LEVELS)[number];
+
+export const LESSON_CATEGORIES = [
+  'WHAT_WENT_WELL',
+  'WHAT_WENT_WRONG',
+  'CHANGE',
+  'REPEAT',
+  'TECHNICAL',
+  'PROCESS',
+  'TEAM',
+] as const;
+export type LessonCategory = (typeof LESSON_CATEGORIES)[number];
+
+export const LEAVE_TYPES = ['ANNUAL', 'SICK', 'CASUAL', 'UNPAID', 'OTHER'] as const;
+export type LeaveType = (typeof LEAVE_TYPES)[number];
+
+/** Leave types drawn from a yearly allowance; the rest are recorded but not counted. */
+export const PAID_LEAVE_TYPES: readonly LeaveType[] = ['ANNUAL', 'SICK', 'CASUAL'];
+
+export const LEAVE_STATUSES = ['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED'] as const;
+export type LeaveStatus = (typeof LEAVE_STATUSES)[number];
 
 export const IMPORT_JOB_STATUSES = ['PARSED', 'CONFIRMED', 'FAILED', 'CANCELLED'] as const;
 export type ImportJobStatus = (typeof IMPORT_JOB_STATUSES)[number];

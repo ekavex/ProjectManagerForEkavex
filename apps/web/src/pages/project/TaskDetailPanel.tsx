@@ -1,17 +1,18 @@
 /**
  * A single task.
  *
- * Two things here are worth noticing. Progress and status are one control, because they
- * are one idea: dragging to 100% completes the task and completing it sets 100%. And when
- * a predecessor is unfinished the server refuses the change once, explains which task is
- * in the way, and offers to proceed anyway — the override is recorded (spec section 20).
+ * Three things here are worth noticing. Progress and status are one control, because they
+ * are one idea: dragging to 100% completes the task and completing it sets 100%. When a
+ * dependency is unmet the server refuses the change once, explains which task is in the
+ * way, and offers to proceed anyway — the override is recorded (spec section 20). And when
+ * the project defines completion criteria, completing asks for them first (rule 7).
  */
-import type { ProjectDetail, TaskStatus } from '@ekavist/shared';
-import { MEMBER_SETTABLE_TASK_STATUSES, TASK_STATUSES } from '@ekavist/shared';
+import type { DependencyType, ProjectDetail, TaskStatus } from '@ekavist/shared';
+import { DEPENDENCY_TYPES, MEMBER_SETTABLE_TASK_STATUSES, TASK_STATUSES } from '@ekavist/shared';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { useToast } from '../../components/ui/overlays.js';
+import { Modal, useConfirm, useToast } from '../../components/ui/overlays.js';
 import { Avatar, FactList } from '../../components/ui/page.js';
 import {
   Badge,
@@ -35,7 +36,7 @@ import {
   PRIORITY_TONE,
   TASK_STATUS_TONE,
 } from '../../lib/format.js';
-import { keys, useTask } from '../../lib/queries.js';
+import { keys, useAttendanceToday, useTask, useTasks } from '../../lib/queries.js';
 import { useQuery } from '@tanstack/react-query';
 
 export function TaskDetailPanel({ project }: { project: ProjectDetail }) {
@@ -45,10 +46,14 @@ export function TaskDetailPanel({ project }: { project: ProjectDetail }) {
 
   const { data: task, isLoading, isError, error, refetch } = useTask(project.id, taskId);
   const [comment, setComment] = useState('');
+  // The change the server warned about, kept so "proceed anyway" can resend it.
   const [predecessorWarning, setPredecessorWarning] = useState<{
     message: string;
-    status: TaskStatus;
+    retry: () => void;
   } | null>(null);
+  const [completing, setCompleting] = useState(false);
+  const rules = project.completionRules;
+  const needsEvidence = rules.requiresNote || rules.requiresActualHours || rules.requiresAttachment;
 
   const canEdit = project.capabilities.includes('task:update');
   const canUpdateOwn = project.capabilities.includes('task:update-own-progress');
@@ -58,9 +63,42 @@ export function TaskDetailPanel({ project }: { project: ProjectDetail }) {
   };
 
   const setStatus = useMutation({
-    mutationFn: ({ status, override }: { status: TaskStatus; override?: boolean }) =>
+    mutationFn: (input: {
+      status: TaskStatus;
+      override?: boolean;
+      note?: string;
+      actualHours?: number;
+    }) =>
       api.patch(`/projects/${project.id}/tasks/${taskId}/status`, {
-        status,
+        status: input.status,
+        overridePredecessorWarning: input.override ?? false,
+        ...(input.note != null && input.note !== '' ? { note: input.note } : {}),
+        ...(input.actualHours != null ? { actualHours: input.actualHours } : {}),
+      }),
+    onSuccess: () => {
+      setPredecessorWarning(null);
+      setCompleting(false);
+      invalidate();
+    },
+    onError: (cause: unknown, variables) => {
+      if (cause instanceof ApiError && cause.code === 'TASK_PREDECESSOR_INCOMPLETE') {
+        setPredecessorWarning({
+          message: cause.message,
+          retry: () => setStatus.mutate({ ...variables, override: true }),
+        });
+        return;
+      }
+      if (cause instanceof ApiError && cause.code === 'TASK_COMPLETION_CRITERIA_UNMET') {
+        setCompleting(true);
+      }
+      toast.error(cause instanceof ApiError ? cause.message : 'Could not update the task.');
+    },
+  });
+
+  const setProgress = useMutation({
+    mutationFn: ({ progress, override }: { progress: number; override?: boolean }) =>
+      api.patch(`/projects/${project.id}/tasks/${taskId}/progress`, {
+        progress,
         overridePredecessorWarning: override ?? false,
       }),
     onSuccess: () => {
@@ -69,20 +107,35 @@ export function TaskDetailPanel({ project }: { project: ProjectDetail }) {
     },
     onError: (cause: unknown, variables) => {
       if (cause instanceof ApiError && cause.code === 'TASK_PREDECESSOR_INCOMPLETE') {
-        setPredecessorWarning({ message: cause.message, status: variables.status });
+        setPredecessorWarning({
+          message: cause.message,
+          retry: () => setProgress.mutate({ ...variables, override: true }),
+        });
         return;
       }
-      toast.error(cause instanceof ApiError ? cause.message : 'Could not update the task.');
+      if (cause instanceof ApiError && cause.code === 'TASK_COMPLETION_CRITERIA_UNMET') {
+        setCompleting(true);
+        return;
+      }
+      toast.error(cause instanceof ApiError ? cause.message : 'Could not update progress.');
     },
   });
 
-  const setProgress = useMutation({
-    mutationFn: (progress: number) =>
-      api.patch(`/projects/${project.id}/tasks/${taskId}/progress`, { progress }),
-    onSuccess: invalidate,
-    onError: (cause: unknown) =>
-      toast.error(cause instanceof ApiError ? cause.message : 'Could not update progress.'),
-  });
+  // Completing asks for the evidence the project requires before sending anything.
+  const changeStatus = (status: TaskStatus): void => {
+    if (status === 'COMPLETED' && needsEvidence) {
+      setCompleting(true);
+      return;
+    }
+    setStatus.mutate({ status });
+  };
+  const changeProgress = (progress: number): void => {
+    if (progress >= 100 && needsEvidence) {
+      setCompleting(true);
+      return;
+    }
+    setProgress.mutate({ progress });
+  };
 
   const addComment = useMutation({
     mutationFn: (body: string) =>
@@ -126,6 +179,7 @@ export function TaskDetailPanel({ project }: { project: ProjectDetail }) {
 
   const statusOptions = canEdit ? TASK_STATUSES : MEMBER_SETTABLE_TASK_STATUSES;
   const mayChange = canEdit || canUpdateOwn;
+  const canLink = project.capabilities.includes('dependency:manage') && project.archivedAt == null;
 
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
@@ -142,6 +196,8 @@ export function TaskDetailPanel({ project }: { project: ProjectDetail }) {
             <Badge tone={TASK_STATUS_TONE[task.status]}>{humanise(task.status)}</Badge>
             <Badge tone={PRIORITY_TONE[task.priority]}>{humanise(task.priority)}</Badge>
             {task.isOverdue && <Badge tone="danger">{dueLabel(task.daysUntilDue, true)}</Badge>}
+            <span className="flex-1" />
+            <WorkOnThisButton projectId={project.id} taskId={task.id} reference={task.reference} />
           </div>
 
           <h2 className="text-lg font-semibold text-ink">{task.name}</h2>
@@ -156,12 +212,10 @@ export function TaskDetailPanel({ project }: { project: ProjectDetail }) {
                 <Button
                   size="sm"
                   variant="primary"
-                  loading={setStatus.isPending}
-                  onClick={() =>
-                    setStatus.mutate({ status: predecessorWarning.status, override: true })
-                  }
+                  loading={setStatus.isPending || setProgress.isPending}
+                  onClick={predecessorWarning.retry}
                 >
-                  Start it anyway
+                  Proceed anyway
                 </Button>
                 <Button size="sm" onClick={() => setPredecessorWarning(null)}>
                   Cancel
@@ -177,9 +231,7 @@ export function TaskDetailPanel({ project }: { project: ProjectDetail }) {
                   id="task-status"
                   value={task.status}
                   disabled={setStatus.isPending}
-                  onChange={(event) =>
-                    setStatus.mutate({ status: event.target.value as TaskStatus })
-                  }
+                  onChange={(event) => changeStatus(event.target.value as TaskStatus)}
                 >
                   {statusOptions.map((value) => (
                     <option key={value} value={value}>
@@ -199,10 +251,13 @@ export function TaskDetailPanel({ project }: { project: ProjectDetail }) {
                   defaultValue={task.progress}
                   disabled={setProgress.isPending}
                   onMouseUp={(event) =>
-                    setProgress.mutate(Number((event.target as HTMLInputElement).value))
+                    changeProgress(Number((event.target as HTMLInputElement).value))
                   }
                   onTouchEnd={(event) =>
-                    setProgress.mutate(Number((event.target as HTMLInputElement).value))
+                    changeProgress(Number((event.target as HTMLInputElement).value))
+                  }
+                  onKeyUp={(event) =>
+                    changeProgress(Number((event.target as HTMLInputElement).value))
                   }
                   className="h-9 w-full accent-[var(--color-accent)]"
                 />
@@ -211,7 +266,7 @@ export function TaskDetailPanel({ project }: { project: ProjectDetail }) {
           )}
         </Card>
 
-        {(task.predecessors.length > 0 || task.successors.length > 0) && (
+        {(task.predecessors.length > 0 || task.successors.length > 0 || canLink) && (
           <Card title="Dependencies">
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
@@ -223,17 +278,12 @@ export function TaskDetailPanel({ project }: { project: ProjectDetail }) {
                 ) : (
                   <ul className="flex flex-col gap-1.5">
                     {task.predecessors.map((link) => (
-                      <li key={link.dependencyId}>
-                        <Link
-                          to={`/projects/${project.id}/tasks/${link.task.id}`}
-                          className="flex items-center gap-2 text-[13px] hover:text-accent"
-                        >
-                          <Badge tone={TASK_STATUS_TONE[link.task.status]}>
-                            {link.task.reference}
-                          </Badge>
-                          <span className="truncate">{link.task.name}</span>
-                        </Link>
-                      </li>
+                      <DependencyItem
+                        key={link.dependencyId}
+                        projectId={project.id}
+                        link={link}
+                        canRemove={canLink}
+                      />
                     ))}
                   </ul>
                 )}
@@ -248,22 +298,18 @@ export function TaskDetailPanel({ project }: { project: ProjectDetail }) {
                 ) : (
                   <ul className="flex flex-col gap-1.5">
                     {task.successors.map((link) => (
-                      <li key={link.dependencyId}>
-                        <Link
-                          to={`/projects/${project.id}/tasks/${link.task.id}`}
-                          className="flex items-center gap-2 text-[13px] hover:text-accent"
-                        >
-                          <Badge tone={TASK_STATUS_TONE[link.task.status]}>
-                            {link.task.reference}
-                          </Badge>
-                          <span className="truncate">{link.task.name}</span>
-                        </Link>
-                      </li>
+                      <DependencyItem
+                        key={link.dependencyId}
+                        projectId={project.id}
+                        link={link}
+                        canRemove={canLink}
+                      />
                     ))}
                   </ul>
                 )}
               </div>
             </div>
+            {canLink && <AddDependencyForm projectId={project.id} taskId={task.id} />}
           </Card>
         )}
 
@@ -378,7 +424,320 @@ export function TaskDetailPanel({ project }: { project: ProjectDetail }) {
           <AddLinkCard projectId={project.id} taskId={task.id} />
         )}
       </div>
+
+      <CompleteTaskModal
+        open={completing}
+        rules={rules}
+        attachments={task.attachments.length}
+        defaultHours={task.actualHours}
+        loading={setStatus.isPending}
+        onClose={() => setCompleting(false)}
+        onSubmit={(evidence) => setStatus.mutate({ status: 'COMPLETED', ...evidence })}
+      />
     </div>
+  );
+}
+
+const DEPENDENCY_LABEL: Record<DependencyType, string> = {
+  FINISH_TO_START: 'Finish → start',
+  START_TO_START: 'Start → start',
+  FINISH_TO_FINISH: 'Finish → finish',
+  START_TO_FINISH: 'Start → finish',
+};
+
+function DependencyItem({
+  projectId,
+  link,
+  canRemove,
+}: {
+  projectId: string;
+  link: {
+    dependencyId: string;
+    type: DependencyType;
+    lagDays: number;
+    task: { id: string; reference: string; name: string; status: TaskStatus };
+  };
+  canRemove: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const confirm = useConfirm();
+  const remove = useMutation({
+    mutationFn: () => api.delete(`/projects/${projectId}/dependencies/${link.dependencyId}`),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['projects', projectId] }),
+    onError: (cause: unknown) =>
+      toast.error(cause instanceof ApiError ? cause.message : 'Could not remove the link.'),
+  });
+
+  return (
+    <li className="flex items-center gap-2">
+      <Link
+        to={`/projects/${projectId}/tasks/${link.task.id}`}
+        className="flex min-w-0 flex-1 items-center gap-2 text-[13px] hover:text-accent"
+      >
+        <Badge tone={TASK_STATUS_TONE[link.task.status]}>{link.task.reference}</Badge>
+        <span className="truncate">{link.task.name}</span>
+      </Link>
+      <span className="shrink-0 text-[11px] text-ink-faint">
+        {DEPENDENCY_LABEL[link.type]}
+        {link.lagDays !== 0 && ` ${link.lagDays > 0 ? '+' : ''}${link.lagDays}d`}
+      </span>
+      {canRemove && (
+        <button
+          type="button"
+          className="shrink-0 rounded px-1 text-[12px] text-ink-faint hover:text-danger"
+          aria-label={`Remove the link to ${link.task.reference}`}
+          disabled={remove.isPending}
+          onClick={() => {
+            void confirm({
+              title: 'Remove this dependency?',
+              message: `${link.task.reference} will no longer be linked to this task.`,
+              confirmLabel: 'Remove',
+              tone: 'danger',
+            }).then((ok) => {
+              if (ok) remove.mutate();
+            });
+          }}
+        >
+          ×
+        </button>
+      )}
+    </li>
+  );
+}
+
+/**
+ * Links another task as a predecessor. The server rejects a link that would close a loop
+ * and names the tasks involved, so the message is shown as it comes back.
+ */
+function AddDependencyForm({ projectId, taskId }: { projectId: string; taskId: string }) {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const [search, setSearch] = useState('');
+  const [predecessorId, setPredecessorId] = useState('');
+  const [type, setType] = useState<DependencyType>('FINISH_TO_START');
+  const [lagDays, setLagDays] = useState(0);
+  const { data } = useTasks(projectId, {
+    page: 1,
+    pageSize: 50,
+    sort: 'reference',
+    search: search.trim() === '' ? undefined : search.trim(),
+  });
+  const candidates = (data?.data ?? []).filter((candidate) => candidate.id !== taskId);
+
+  const add = useMutation({
+    mutationFn: () =>
+      api.post(`/projects/${projectId}/dependencies`, {
+        predecessorId,
+        successorId: taskId,
+        type,
+        lagDays,
+      }),
+    onSuccess: () => {
+      setPredecessorId('');
+      setSearch('');
+      void queryClient.invalidateQueries({ queryKey: ['projects', projectId] });
+      toast.success('Dependency added.');
+    },
+    onError: (cause: unknown) =>
+      toast.error(cause instanceof ApiError ? cause.message : 'Could not add the dependency.'),
+  });
+
+  return (
+    <form
+      className="mt-4 grid gap-3 border-t border-line pt-4 sm:grid-cols-[minmax(0,1fr)_10rem_6rem_auto] sm:items-end"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (predecessorId !== '') add.mutate();
+      }}
+    >
+      <Field label="Waits for" htmlFor="dependency-task">
+        <div className="flex flex-col gap-1.5">
+          <Input
+            type="search"
+            placeholder="Find a task…"
+            aria-label="Find a task to depend on"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+          />
+          <Select
+            id="dependency-task"
+            required
+            value={predecessorId}
+            onChange={(event) => setPredecessorId(event.target.value)}
+          >
+            <option value="">Choose a task…</option>
+            {candidates.map((candidate) => (
+              <option key={candidate.id} value={candidate.id}>
+                {candidate.reference} — {candidate.name}
+              </option>
+            ))}
+          </Select>
+        </div>
+      </Field>
+      <Field label="Type" htmlFor="dependency-type">
+        <Select
+          id="dependency-type"
+          value={type}
+          onChange={(event) => setType(event.target.value as DependencyType)}
+        >
+          {DEPENDENCY_TYPES.map((value) => (
+            <option key={value} value={value}>
+              {DEPENDENCY_LABEL[value]}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      <Field label="Lag (days)" htmlFor="dependency-lag">
+        <Input
+          id="dependency-lag"
+          type="number"
+          min={-365}
+          max={365}
+          value={lagDays}
+          onChange={(event) => setLagDays(Number(event.target.value) || 0)}
+        />
+      </Field>
+      <Button
+        type="submit"
+        variant="primary"
+        loading={add.isPending}
+        disabled={predecessorId === ''}
+      >
+        Link
+      </Button>
+    </form>
+  );
+}
+
+/** Collects the evidence the project's completion criteria ask for (business rule 7). */
+function CompleteTaskModal({
+  open,
+  rules,
+  attachments,
+  defaultHours,
+  loading,
+  onClose,
+  onSubmit,
+}: {
+  open: boolean;
+  rules: ProjectDetail['completionRules'];
+  attachments: number;
+  defaultHours: number | null;
+  loading: boolean;
+  onClose: () => void;
+  onSubmit: (evidence: { note?: string; actualHours?: number }) => void;
+}) {
+  const [note, setNote] = useState('');
+  const [hours, setHours] = useState(defaultHours == null ? '' : String(defaultHours));
+  const missingAttachment = rules.requiresAttachment && attachments === 0;
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Complete this task"
+      description="This project asks for a little evidence before a task is marked complete."
+      size="sm"
+      footer={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button
+            variant="primary"
+            type="submit"
+            form="complete-task"
+            loading={loading}
+            disabled={missingAttachment}
+          >
+            Mark complete
+          </Button>
+        </>
+      }
+    >
+      <form
+        id="complete-task"
+        className="flex flex-col gap-4"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSubmit({
+            ...(note.trim() !== '' ? { note: note.trim() } : {}),
+            ...(hours !== '' ? { actualHours: Number(hours) } : {}),
+          });
+        }}
+      >
+        <Field
+          label="Completion note"
+          htmlFor="complete-note"
+          required={rules.requiresNote}
+          hint="What was delivered, and where to find it."
+        >
+          <Textarea
+            id="complete-note"
+            rows={3}
+            required={rules.requiresNote}
+            value={note}
+            onChange={(event) => setNote(event.target.value)}
+          />
+        </Field>
+        <Field label="Actual hours" htmlFor="complete-hours" required={rules.requiresActualHours}>
+          <Input
+            id="complete-hours"
+            type="number"
+            min={0}
+            step={0.25}
+            required={rules.requiresActualHours}
+            value={hours}
+            onChange={(event) => setHours(event.target.value)}
+          />
+        </Field>
+        {missingAttachment && (
+          <p className="rounded-md border border-warn bg-warn-soft px-3 py-2 text-[13px] text-[oklch(42%_0.11_70)]">
+            Attach a link or file reference to this task first; this project requires one.
+          </p>
+        )}
+      </form>
+    </Modal>
+  );
+}
+
+/**
+ * Points the running work session at this task, or starts the day on it (spec section
+ * 29). Time is then attributed to the task without ending attendance.
+ */
+function WorkOnThisButton({
+  projectId,
+  taskId,
+  reference,
+}: {
+  projectId: string;
+  taskId: string;
+  reference: string;
+}) {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const { data: today } = useAttendanceToday();
+  const current = today?.openSession?.task?.id === taskId;
+
+  const work = useMutation({
+    mutationFn: () =>
+      today?.isWorking === true
+        ? api.post('/attendance/switch', { projectId, taskId })
+        : api.post('/attendance/start-work', { projectId, taskId }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: keys.attendanceToday });
+      toast.success(`Now working on ${reference}.`);
+    },
+    onError: (cause: unknown) =>
+      toast.error(cause instanceof ApiError ? cause.message : 'Could not switch task.'),
+  });
+
+  if (today == null) return null;
+  if (current) return <Badge tone="ok">Working on this now</Badge>;
+  if (today.isOnBreak) return null;
+  return (
+    <Button size="sm" variant="ghost" loading={work.isPending} onClick={() => work.mutate()}>
+      {today.isWorking ? 'Switch to this task' : 'Start work on this'}
+    </Button>
   );
 }
 

@@ -192,6 +192,8 @@ enum NotificationType {
   LEAD_OVERDUE_DIGEST
   DAILY_SUMMARY
   WEEKLY_SUMMARY
+  LEAVE_REQUESTED
+  LEAVE_DECIDED
 }
 
 enum EmailStatus {
@@ -205,6 +207,21 @@ enum ImportJobStatus {
   PARSED
   CONFIRMED
   FAILED
+  CANCELLED
+}
+
+enum LeaveType {
+  ANNUAL
+  SICK
+  CASUAL
+  UNPAID
+  OTHER
+}
+
+enum LeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
   CANCELLED
 }
 
@@ -235,6 +252,10 @@ model Organization {
   /// Minutes of work below which a day counts as HALF_DAY rather than PRESENT.
   halfDayMinutes Int     @default(240)
   fullDayMinutes Int     @default(480)
+  /// Paid leave allowance per calendar year, in days, by leave type.
+  annualLeaveDays Int    @default(18)
+  sickLeaveDays   Int    @default(8)
+  casualLeaveDays Int    @default(6)
   logoUrl       String?
   createdAt     DateTime @default(now()) @db.Timestamptz(3)
   updatedAt     DateTime @updatedAt @db.Timestamptz(3)
@@ -245,6 +266,7 @@ model Organization {
   rolePermissions   RolePermission[]
   notificationRules NotificationRule[]
   holidays          Holiday[]
+  leaveRequests     LeaveRequest[]
 }
 
 model Department {
@@ -286,6 +308,11 @@ model User {
   /// Consecutive failed logins; reset on success. Feeds the login throttle.
   failedLogins   Int        @default(0)
   lockedUntil    DateTime?  @db.Timestamptz(3)
+  /// Base32 TOTP secret. Set while enrolment is pending, kept once confirmed.
+  totpSecret     String?
+  totpEnabledAt  DateTime?  @db.Timestamptz(3)
+  /// SHA-256 hashes of the unused one-time recovery codes.
+  totpRecoveryCodes String[] @default([])
   createdAt      DateTime   @default(now()) @db.Timestamptz(3)
   updatedAt      DateTime   @updatedAt @db.Timestamptz(3)
 
@@ -342,6 +369,8 @@ model User {
   activityEntries   ActivityLog[]
   importJobs        ImportJob[]
   lessons           ProjectLesson[]
+  leaveRequests     LeaveRequest[]   @relation("LeaveRequester")
+  decidedLeave      LeaveRequest[]   @relation("LeaveApprover")
 
   @@unique([organizationId, email])
   @@index([organizationId, status])
@@ -454,6 +483,11 @@ model Project {
   objectives          String[]      @default([])
   deliverables        String[]      @default([])
   handoverNote        String?
+  /// Completion criteria (business rule 7): what a task must carry before it can be
+  /// marked completed in this project.
+  completionRequiresNote        Boolean @default(false)
+  completionRequiresActualHours Boolean @default(false)
+  completionRequiresAttachment  Boolean @default(false)
   /// Per-project counters behind the human references T-1, R-1, I-1, CR-1, D-1.
   taskCounter         Int           @default(0)
   riskCounter         Int           @default(0)
@@ -1281,4 +1315,32 @@ model ImportJob {
   uploadedBy User    @relation(fields: [uploadedById], references: [id], onDelete: Cascade)
 
   @@index([projectId, status])
+}
+
+/// A request for time off (spec section 86). Approved leave marks the attendance days it
+/// covers as LEAVE and is shown against the person's open tasks.
+model LeaveRequest {
+  id             String      @id @default(cuid())
+  organizationId String
+  userId         String
+  type           LeaveType
+  startDate      DateTime    @db.Date
+  endDate        DateTime    @db.Date
+  /// Working days the request consumes, excluding weekends and holidays. Half days count 0.5.
+  days           Decimal     @db.Decimal(5, 1)
+  halfDay        Boolean     @default(false)
+  reason         String?
+  status         LeaveStatus @default(PENDING)
+  approverId     String?
+  decidedAt      DateTime?   @db.Timestamptz(3)
+  decisionNote   String?
+  createdAt      DateTime    @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime    @updatedAt @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation("LeaveRequester", fields: [userId], references: [id], onDelete: Cascade)
+  approver     User?        @relation("LeaveApprover", fields: [approverId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, status])
+  @@index([userId, startDate])
 }

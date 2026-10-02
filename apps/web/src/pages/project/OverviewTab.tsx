@@ -1,4 +1,4 @@
-import type { ProjectDetail } from '@ekavist/shared';
+import type { EarnedValueMetrics, ProjectDetail, WorkstreamRow } from '@ekavist/shared';
 import { Link } from 'react-router-dom';
 import { TaskList } from '../../components/TaskTable.js';
 import { Avatar, FactList } from '../../components/ui/page.js';
@@ -10,6 +10,9 @@ import {
   LoadingState,
   ProgressBar,
   Stat,
+  Table,
+  Td,
+  Th,
 } from '../../components/ui/primitives.js';
 import {
   formatDate,
@@ -139,6 +142,8 @@ export function OverviewTab({ project }: { project: ProjectDetail }) {
             </Card>
           </div>
 
+          <WorkstreamCard rows={data.workstreams} />
+
           <Card title="Recent activity">
             {data.recentActivity.length === 0 ? (
               <p className="py-6 text-center text-[13px] text-ink-faint">
@@ -177,6 +182,8 @@ export function OverviewTab({ project }: { project: ProjectDetail }) {
               ))}
             </ul>
           </Card>
+
+          <EarnedValueCard metrics={data.earnedValue} />
 
           <Card title="Details">
             <FactList
@@ -249,5 +256,119 @@ export function OverviewTab({ project }: { project: ProjectDetail }) {
         </div>
       </div>
     </div>
+  );
+}
+
+/** Task counts per phase, the workstream view of spec section 49. */
+function WorkstreamCard({ rows }: { rows: WorkstreamRow[] }) {
+  const used = rows.filter((row) => row.total > 0);
+  return (
+    <Card title="Workstreams" description="Tasks in each phase" bodyClassName="p-0">
+      {used.length === 0 ? (
+        <p className="px-4 py-6 text-center text-[13px] text-ink-faint">No tasks planned yet.</p>
+      ) : (
+        <Table>
+          <thead>
+            <tr>
+              <Th>Workstream</Th>
+              <Th align="right">Total</Th>
+              <Th align="right">Done</Th>
+              <Th align="right">Doing</Th>
+              <Th align="right">To do</Th>
+              <Th align="right">Blocked</Th>
+              <Th align="right">Overdue</Th>
+              <Th align="right">Progress</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {used.map((row) => (
+              <tr key={row.id ?? 'none'}>
+                <Td className="font-medium">{row.name}</Td>
+                <Td align="right">{row.total}</Td>
+                <Td align="right">{row.completed}</Td>
+                <Td align="right">{row.inProgress}</Td>
+                <Td align="right">{row.notStarted}</Td>
+                <Td align="right">{row.blocked}</Td>
+                <Td align="right" className={row.overdue > 0 ? 'text-danger' : undefined}>
+                  {row.overdue}
+                </Td>
+                <Td align="right">
+                  <span className="flex items-center justify-end gap-2">
+                    <ProgressBar
+                      value={row.progress}
+                      tone={progressTone(row.progress)}
+                      className="w-14"
+                    />
+                    <span className="w-9">{row.progress}%</span>
+                  </span>
+                </Td>
+              </tr>
+            ))}
+          </tbody>
+        </Table>
+      )}
+    </Card>
+  );
+}
+
+/**
+ * Earned value in hours (spec sections 52 and 53). Each figure carries a plain-language
+ * reading, because an SPI of 0.82 means nothing to most people until it says "behind".
+ */
+function EarnedValueCard({ metrics }: { metrics: EarnedValueMetrics }) {
+  if (metrics.budgetAtCompletion === 0) {
+    return (
+      <Card title="Earned value" description="Needs task estimates">
+        <p className="text-[13px] text-ink-faint">
+          Add estimated hours to tasks to see schedule and cost performance.
+        </p>
+      </Card>
+    );
+  }
+
+  const ratio = (value: number | null) => (value == null ? '—' : value.toFixed(2));
+  const reading = (value: number | null, ahead: string, behind: string) =>
+    value == null ? 'Not enough data yet' : value >= 1 ? ahead : behind;
+  const tone = (value: number | null) =>
+    value == null ? 'neutral' : value >= 0.95 ? 'ok' : value >= 0.8 ? 'warn' : 'danger';
+
+  return (
+    <Card title="Earned value" description={`In hours, as of ${formatDate(metrics.asOf)}`}>
+      <div className="mb-3 grid grid-cols-2 gap-3">
+        <div>
+          <p className="text-[11px] font-semibold tracking-wide text-ink-faint uppercase">SPI</p>
+          <p className="tabular text-xl font-semibold text-ink">{ratio(metrics.spi)}</p>
+          <Badge tone={tone(metrics.spi)}>
+            {reading(metrics.spi, 'On or ahead of schedule', 'Behind schedule')}
+          </Badge>
+        </div>
+        <div>
+          <p className="text-[11px] font-semibold tracking-wide text-ink-faint uppercase">CPI</p>
+          <p className="tabular text-xl font-semibold text-ink">{ratio(metrics.cpi)}</p>
+          <Badge tone={tone(metrics.cpi)}>
+            {reading(metrics.cpi, 'Within effort', 'Over effort')}
+          </Badge>
+        </div>
+      </div>
+      <FactList
+        columns={1}
+        items={[
+          { label: 'Planned value', value: `${metrics.plannedValue} h` },
+          { label: 'Earned value', value: `${metrics.earnedValue} h` },
+          { label: 'Actual hours', value: `${metrics.actualCost} h` },
+          { label: 'Budget at completion', value: `${metrics.budgetAtCompletion} h` },
+          {
+            label: 'Estimate at completion',
+            value: metrics.estimateAtCompletion == null ? '—' : `${metrics.estimateAtCompletion} h`,
+          },
+        ]}
+      />
+      {metrics.tasksWithoutEstimate > 0 && (
+        <p className="mt-3 text-[12px] text-ink-faint">
+          {metrics.tasksWithoutEstimate} open task
+          {metrics.tasksWithoutEstimate === 1 ? ' has' : 's have'} no estimate and are not counted.
+        </p>
+      )}
+    </Card>
   );
 }

@@ -185,6 +185,8 @@ function CreateProjectModal({ open, onClose }: { open: boolean; onClose: () => v
   const toast = useToast();
   const queryClient = useQueryClient();
   const { data: users } = useUsers({ page: 1, pageSize: 100, status: 'ACTIVE' });
+  // Any project the creator can see may serve as the template for a new one.
+  const { data: templates } = useProjects({ page: 1, pageSize: 100, includeArchived: true });
 
   const [form, setForm] = useState<Partial<CreateProjectInput>>({
     priority: 'MEDIUM',
@@ -349,21 +351,46 @@ function CreateProjectModal({ open, onClose }: { open: boolean; onClose: () => v
           />
         </Field>
 
-        <label className="flex items-start gap-2.5 sm:col-span-2">
-          <input
-            type="checkbox"
-            checked={form.useDefaultPhases !== false}
-            onChange={(event) => setForm({ ...form, useDefaultPhases: event.target.checked })}
-            className="mt-0.5 size-4 accent-[var(--color-accent)]"
-          />
-          <span>
-            <span className="block text-sm text-ink">Create the eight Waterfall phases</span>
-            <span className="block text-[12px] text-ink-faint">
-              Initiation, Requirements, Planning, Design, Execution, Testing, Deployment and
-              Closure. You can rename, reorder or remove them afterwards.
-            </span>
-          </span>
-        </label>
+        <Field
+          label="Start from"
+          htmlFor="template"
+          className="sm:col-span-2"
+          hint={
+            form.templateProjectId != null
+              ? 'Copies the phases, WBS, tasks, dependencies and milestones, shifted to the new start date. People, progress and history are not copied.'
+              : form.useDefaultPhases !== false
+                ? 'Initiation, Requirements, Planning, Design, Execution, Testing, Deployment and Closure. You can rename, reorder or remove them afterwards.'
+                : 'No phases; you add them yourself.'
+          }
+        >
+          <Select
+            id="template"
+            value={
+              form.templateProjectId ?? (form.useDefaultPhases !== false ? 'default' : 'empty')
+            }
+            onChange={(event) => {
+              const value = event.target.value;
+              const { templateProjectId: _previous, ...rest } = form;
+              setForm(
+                value === 'default' || value === 'empty'
+                  ? { ...rest, useDefaultPhases: value === 'default' }
+                  : { ...rest, useDefaultPhases: false, templateProjectId: value },
+              );
+            }}
+          >
+            <option value="default">The eight Waterfall phases</option>
+            <option value="empty">An empty project</option>
+            {(templates?.data ?? []).length > 0 && (
+              <optgroup label="A copy of an existing project's plan">
+                {(templates?.data ?? []).map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.code} — {project.name}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+          </Select>
+        </Field>
       </form>
     </Modal>
   );

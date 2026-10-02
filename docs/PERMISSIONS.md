@@ -34,6 +34,7 @@ change-request:create change-request:decide
 report:read report:export
 attendance:read-own attendance:read-team attendance:read-all
 import:run project:close
+leave:manage role:manage
 ```
 
 ## 3. Organisation-role matrix
@@ -43,6 +44,7 @@ import:run project:close
 | user:_, department:manage, org:_, audit:read |     yes     |      no      |     no      |   no   |
 | project:create, project:delete               |     yes     |      no      |     no      |   no   |
 | project:read across all projects             |     yes     |      no      |     no      |   no   |
+| leave:manage, role:manage                    |     yes     |      no      |     no      |   no   |
 | attendance:read-all                          |     yes     |      no      |     no      |   no   |
 | attendance:read-team                         |     yes     | own projects |     no      |   no   |
 | attendance:read-own                          |     yes     |     yes      |     yes     |  yes   |
@@ -117,3 +119,23 @@ actual-hours fields.
 
 `apps/api/tests/permissions/` walks the full matrix: for every endpoint and every role it
 asserts the expected status code. An endpoint with no matrix entry fails the suite.
+
+## Additions after the first release
+
+- **Administrators always hold every permission.** `loadOrgPermissions` returns the whole
+  vocabulary for `SUPER_ADMIN` regardless of stored rows, so permissions added later (such
+  as the two below) reach existing administrators, and nobody can lock themselves out of
+  the role editor. Their row is shown as read-only in Administration → Roles.
+- **`role:manage`** — edit the organisation-wide grants of the other roles
+  (`PUT /organization/roles/:role`). Project-scoped rights still come from the person's
+  role in each project and are not edited there.
+- **`leave:manage`** — see and decide anyone's leave. Without it, a person may decide the
+  requests of the people whose `managerId` is theirs, and nobody decides their own.
+- **Organisation settings and holidays** use the existing `org:settings`.
+- **Project lessons learned** use `project:close`; they may be added while the project is
+  live or completed, not once it is archived or cancelled.
+- **Project exports** (`GET /projects/:id/export/:dataset`) need `report:export`. The
+  workload and attendance CSVs are scoped exactly like their screens.
+- **Capacity** (`GET /reports/capacity`) needs `report:read`, `attendance:read-team` or
+  `attendance:read-all`; leads see the members of projects they lead, administrators and
+  `attendance:read-all` holders see everyone.

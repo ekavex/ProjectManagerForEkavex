@@ -1,5 +1,9 @@
 import {
   changePasswordSchema,
+  disableTwoFactorSchema,
+  twoFactorCodeSchema,
+  type DisableTwoFactorInput,
+  type TwoFactorCodeInput,
   forgotPasswordSchema,
   loginSchema,
   resetPasswordSchema,
@@ -113,6 +117,59 @@ authRouter.post(
     const meta = { ip: clientIp(req), userAgent: userAgent(req) };
     await authService.changePassword(prisma, actor.id, body<ChangePasswordInput>(req), meta);
     res.clearCookie(REFRESH_COOKIE_NAME, { path: '/api/v1/auth' });
+    res.status(204).send();
+  }),
+);
+
+// ---------------------------------------------------------------- two-factor
+
+authRouter.get(
+  '/two-factor',
+  requireAuth,
+  handler(async (req, res) => {
+    res.json(await authService.getTwoFactorStatus(prisma, requireActor(req).id));
+  }),
+);
+
+authRouter.post(
+  '/two-factor/enrol',
+  requireAuth,
+  handler(async (req, res) => {
+    res.json(await authService.beginTwoFactorEnrolment(prisma, requireActor(req).id));
+  }),
+);
+
+authRouter.post(
+  '/two-factor/confirm',
+  requireAuth,
+  authLimiter,
+  validate({ body: twoFactorCodeSchema }),
+  handler(async (req, res) => {
+    const meta = { ip: clientIp(req), userAgent: userAgent(req) };
+    res.json(
+      await authService.confirmTwoFactor(
+        prisma,
+        requireActor(req).id,
+        body<TwoFactorCodeInput>(req).code,
+        meta,
+      ),
+    );
+  }),
+);
+
+authRouter.post(
+  '/two-factor/disable',
+  requireAuth,
+  authLimiter,
+  validate({ body: disableTwoFactorSchema }),
+  handler(async (req, res) => {
+    const meta = { ip: clientIp(req), userAgent: userAgent(req) };
+    await authService.disableTwoFactor(
+      prisma,
+      requireActor(req).id,
+      body<DisableTwoFactorInput>(req),
+      meta,
+    );
     res.status(204).send();
   }),
 );

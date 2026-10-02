@@ -399,7 +399,7 @@ function Final({ project }: { project: ProjectDetail }) {
         <Card title="Lessons learned" className="lg:col-span-2">
           {data.lessons.length === 0 ? (
             <p className="py-6 text-center text-[13px] text-ink-faint">
-              No lessons recorded yet. They are captured when the project is closed.
+              No lessons recorded yet. The project lead adds them on the Closure tab.
             </p>
           ) : (
             <ul className="flex flex-col gap-2 text-[13px]">

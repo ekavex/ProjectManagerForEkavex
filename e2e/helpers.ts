@@ -54,6 +54,14 @@ export async function selectByText(page: Page, label: string, text: string): Pro
   await select.selectOption(value);
 }
 
+/**
+ * A date relative to today, as YYYY-MM-DD. The journeys depend on where dates fall
+ * relative to today — "upcoming" is the next fortnight — so fixed dates go stale.
+ */
+export function daysFromToday(days: number): string {
+  return new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
+}
+
 /** Creates a project as an administrator and returns its id from the URL. */
 export async function createProject(
   page: Page,
@@ -65,8 +73,8 @@ export async function createProject(
   await page.getByLabel('Project name').fill(options.name);
   await page.getByLabel('Project code').fill(options.code);
   await selectByText(page, 'Project lead', options.leadName);
-  await page.getByLabel('Start date').fill('2026-09-01');
-  await page.getByLabel('Planned completion').fill('2026-12-15');
+  await page.getByLabel('Start date').fill(daysFromToday(-30));
+  await page.getByLabel('Planned completion').fill(daysFromToday(75));
 
   await page.getByRole('button', { name: 'Create project' }).click();
 
